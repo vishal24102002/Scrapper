@@ -1,12 +1,5 @@
-import sys
-import telethon
-import inspect
-import re
-import os
-import configparser
-import asyncio
-import logging
-import argparse
+import sys,telethon,inspect,re,os,configparser,asyncio,logging,argparse
+from decouple import config
 from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
 import yt_dlp
 from datetime import datetime, timedelta, timezone
@@ -46,10 +39,8 @@ if not os.path.exists(CONFIG_FILE_PATH):
     logging.error(f"Configuration file not found at {CONFIG_FILE_PATH}")
     sys.exit(1)
 
-config = configparser.ConfigParser()
-config.read(CONFIG_FILE_PATH)
-api_id = config["telethon_credentials"]["api_id"]
-api_hash = config["telethon_credentials"]["api_hash"]
+api_id = config("api_id")
+api_hash = config("api_hash")
 
 # Safe decode
 def safe_decode(text):

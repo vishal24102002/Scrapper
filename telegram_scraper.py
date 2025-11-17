@@ -250,7 +250,7 @@ class ScraperGUI(QMainWindow):
 
         settings_layout.addWidget(QLabel("Add/Remove Telegram Group:"))
         self.group_input = QLineEdit()
-        self.group_input.setPlaceholderText("https://t.me/Fall_of_the_Cabal")
+        self.group_input.setPlaceholderText("https://t.me/channel-link")
         settings_layout.addWidget(self.group_input)
 
         btn_grid = QGridLayout()

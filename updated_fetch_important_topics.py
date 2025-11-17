@@ -1,8 +1,6 @@
-import datetime
-import requests
+import datetime,requests,re,os
+from decouple import config
 from collections import Counter
-import re
-import os
 
 # Function to fetch Google Trends for worldwide trends
 def fetch_google_trends(date):
@@ -99,9 +97,9 @@ if __name__ == "__main__":
         print("Invalid date format. Please use YYYY-MM-DD.")
         exit()
 
-    youtube_api_key = "AIzaSyBOtaxvJjsDpIoIbNI5Lbb4aIUsMvDQXTg"
-    twitter_bearer_token = "AAAAAAAAAAAAAAAAAAAAAPJSyAEAAAAA8%2Bwq6rTE3mb8hkKMV3I4DdQzWj8%3DTP0rkyEVio4ZvocGawckKnMFqtJMg4njpqd6Z1ufsbakSAco4l"
-    
+    youtube_api_key = config("youtube_api_key")
+    twitter_bearer_token = config("twitter_bearer_token")
+
     if not youtube_api_key or not twitter_bearer_token:
         print("Please set the YouTube API Key and Twitter Bearer Token as environment variables.")
     else:

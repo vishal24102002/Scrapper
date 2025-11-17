@@ -1,10 +1,11 @@
 import requests
+from decouple import config
 
 # Your YouTube Data API key
-API_KEY = "AIzaSyCGfb_-oeu9UXNxeAu9L3nYeRIeni2O14s"
+API_KEY = config("API_KEY")
 
 # Channel username
-channel_username = "ChristosAvatarAscension"
+channel_username = config("CH_USER")
 
 # Step 1: Get the channel ID using the channel username
 def get_channel_id(api_key, username):

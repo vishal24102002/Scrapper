@@ -4,6 +4,7 @@ from openpyxl import Workbook, load_workbook
 import requests
 from googleapiclient.discovery import build
 from bs4 import BeautifulSoup
+from decouple import config
 
 # Function to save trends to an Excel file
 def save_to_excel(google_trends, youtube_trends):
@@ -118,7 +119,7 @@ def fetch_trending_videos(api_key, region_code='US'):
 # Main function to execute
 if __name__ == "__main__":
     # API Key for YouTube Data API
-    API_KEY = "AIzaSyCGfb_-oeu9UXNxeAu9L3nYeRIeni2O14s"  # Replace with your API key
+    API_KEY=config("API_KEY")
 
     # Fetch Google Trends
     google_trends = fetch_google_trends(region_code='US')
