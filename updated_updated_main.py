@@ -1,9 +1,4 @@
-import os
-import sys
-import subprocess
-import logging
-import asyncio
-import argparse
+import os, sys, subprocess, logging, asyncio, argparse
 from datetime import datetime, timedelta
 from telethon.errors import SessionPasswordNeededError
 
