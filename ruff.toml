@@ -1,0 +1,4 @@
+[lint]
+select = ["F401"]   # ONLY unused import
+ignore = ["ALL"]    # disable everything else
+fixable = ["F401"]  # allow auto-fix only for F401 (unused import)
