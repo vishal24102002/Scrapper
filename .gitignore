@@ -2,15 +2,12 @@
 .DS_Store
 .db
 
-#folders to ignore
-additional_file/
-
-
 # Python
 __pycache__/
 *.pyc
 .env
 5ai-scrapper/
+additional_file/
 .env/
 
 # Node / Angular
