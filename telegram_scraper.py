@@ -192,7 +192,7 @@ class ScraperGUI(QMainWindow):
                 QPushButton#startButton:hover { background-color: #00e600; }
                 QPushButton#stopButton { background-color: #ff3333; }
                 QPushButton#stopButton:hover { background-color: #ff5555; }
-                QPushButton#themeButton { background-color: #ff9500; padding: 8px; }
+                QPushButton#themeButton { background-color: #222; padding: 8px; border-radius: 6px; }
                 QTextEdit, QLineEdit {
                     background-color: #2a2a38;
                     color: #e0e0e0;
@@ -275,7 +275,7 @@ class ScraperGUI(QMainWindow):
                 QPushButton#startButton:hover { background-color: #00e600; }
                 QPushButton#stopButton { background-color: #ff3333; }
                 QPushButton#stopButton:hover { background-color: #ff5555; }
-                QPushButton#themeButton { background-color: #ff9500; padding: 8px; }
+                QPushButton#themeButton { background-color: #f0f0f0; padding: 8px; border-radius: 6px; color: #222; }
                 QTextEdit, QLineEdit {
                     background-color: white;
                     color: #222;
@@ -323,12 +323,7 @@ class ScraperGUI(QMainWindow):
     def toggle_theme(self):
         self.dark_theme = not self.dark_theme
         self.apply_theme()
-        if self.dark_theme:
-            self.btn_theme.setText("☀ Light Mode")
-            self.append_log("Switched to Dark Theme", "INFO")
-        else:
-            self.btn_theme.setText("🌙 Dark Mode")
-            self.append_log("Switched to Light Theme", "INFO")
+        self.append_log(f"Switched to {'Dark' if self.dark_theme else 'Light'} Theme", "INFO")
 
     def init_ui(self):
         central = QWidget()
@@ -340,8 +335,8 @@ class ScraperGUI(QMainWindow):
         left_panel = QGroupBox("⚙ Control Panel")
         left_layout = QVBoxLayout()
         left_panel.setLayout(left_layout)
-        
-        left_layout.addSpacerItem(QSpacerItem(20, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+
+        left_layout.addSpacerItem(QSpacerItem(20, 5, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
 
         # Main control buttons
         buttons = [
@@ -372,25 +367,32 @@ class ScraperGUI(QMainWindow):
             ("Yesterday", 1, "Select yesterday's date"),
             ("Last 7 Days", 7, "Select past week"),
             ("Last 30 Days", 30, "Select past month"),
-            ("All Time", 365, "Select past year")
+            ("Custom", 0, "Select custom dates from calendar")
         ]
         for i, (label, days, tooltip) in enumerate(presets):
             btn = QPushButton(label)
             btn.setToolTip(tooltip)
-            btn.clicked.connect(lambda checked, d=days: self.add_date_preset(d))
+            if days == 0:
+                btn.setStyleSheet("background-color: #ff9500;")
+                btn.clicked.connect(self.show_custom_calendar)
+            else:
+                btn.clicked.connect(lambda checked, d=days: self.add_date_preset(d))
             preset_layout.addWidget(btn, i // 2, i % 2)
         left_layout.addLayout(preset_layout)
         
+        # Calendar widget (hidden by default)
         self.calendar = QCalendarWidget()
         self.calendar.setGridVisible(True)
         self.calendar.setMaximumDate(QDate.currentDate().addDays(-1))
         self.calendar.clicked.connect(self.highlight_calendar_dates)
+        self.calendar.setVisible(False)  # Hidden by default
         left_layout.addWidget(self.calendar)
         
         date_btn_layout = QHBoxLayout()
         self.btn_add_date = QPushButton("➕ Add Date")
         self.btn_add_date.clicked.connect(self.add_selected_date)
         self.btn_add_date.setToolTip("Add selected date to the list")
+        self.btn_add_date.setVisible(False)  # Hidden by default
         date_btn_layout.addWidget(self.btn_add_date)
         
         self.btn_clear_dates = QPushButton("🗑 Clear All")
@@ -453,9 +455,9 @@ class ScraperGUI(QMainWindow):
         middle_column.addWidget(stats_panel)
 
         # Log panel
-        log_panel = QGroupBox("Live Output Log")
+        log_panel = QGroupBox("📝 Live Output Log")
         log_layout = QVBoxLayout()
-           
+        
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setFont(QFont("Consolas", 10))
@@ -523,6 +525,7 @@ class ScraperGUI(QMainWindow):
         self.btn_import.setToolTip("Import configuration from JSON file")
         settings_layout.addWidget(self.btn_import)
 
+
         settings_layout.addSpacerItem(QSpacerItem(20, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
 
         self.btn_set_default = QPushButton("💾 Set as Default Directory")
@@ -553,37 +556,42 @@ class ScraperGUI(QMainWindow):
 
         settings_layout.addSpacerItem(QSpacerItem(20, 15, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
 
-        self.btn_check_updates = QPushButton("🔄 Check for Updates")
-        self.btn_check_updates.clicked.connect(self.check_updates)
-        self.btn_check_updates.setToolTip("Check for new version")
-        settings_layout.addWidget(self.btn_check_updates)
-        
-        # Open folder button
         self.btn_open_folder = QPushButton("📁 Open Target Folder")
         self.btn_open_folder.clicked.connect(self.open_target_folder)
         self.btn_open_folder.setToolTip("Open target folder in file explorer")
         settings_layout.addWidget(self.btn_open_folder)
 
 
-        settings_layout.addStretch()
-
-        log_btn_layout = QHBoxLayout()
-        self.btn_clear_log = QPushButton("🗑 Log")
+        settings_layout.addSpacerItem(QSpacerItem(20, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+        
+        log_grid=QGridLayout()
+        # Log control buttons
+        self.btn_clear_log = QPushButton("🗑 Clear Log")
         self.btn_clear_log.clicked.connect(self.clear_log)
         self.btn_clear_log.setToolTip("Clear all log entries")
-        log_btn_layout.addWidget(self.btn_clear_log)
+        log_grid.addWidget(self.btn_clear_log,0,0)
         
-        self.btn_copy_log = QPushButton("📋 Log")
+        self.btn_copy_log = QPushButton("📋 Copy Log")
         self.btn_copy_log.clicked.connect(self.copy_log)
         self.btn_copy_log.setToolTip("Copy log to clipboard")
-        log_btn_layout.addWidget(self.btn_copy_log)
-        settings_layout.addLayout(log_btn_layout)
+        log_grid.addWidget(self.btn_copy_log,0,1)
 
-        # Theme toggle button at top
-        self.btn_theme = QPushButton("☀ Light Mode")
+        settings_layout.addLayout(log_grid)
+
+        settings_layout.addStretch()
+
+        self.btn_check_updates = QPushButton("🔄 Check for Updates")
+        self.btn_check_updates.clicked.connect(self.check_updates)
+        self.btn_check_updates.setToolTip("Check for new version")
+        settings_layout.addWidget(self.btn_check_updates)
+
+        
+        # Theme toggle button with eye icon (compact)
+        self.btn_theme = QPushButton("👁")
         self.btn_theme.setObjectName("themeButton")
         self.btn_theme.clicked.connect(self.toggle_theme)
-        self.btn_theme.setToolTip("Switch between Dark and Light themes")
+        self.btn_theme.setToolTip("Toggle Dark/Light Mode")
+        self.btn_theme.setMaximumSize(50, 40)
         settings_layout.addWidget(self.btn_theme)
         
         # Version label at bottom
@@ -600,6 +608,16 @@ class ScraperGUI(QMainWindow):
         main_layout.addWidget(settings_panel, 1)
 
     # ====================== UTILITY METHODS ======================
+    def show_custom_calendar(self):
+        """Toggle calendar visibility for custom date selection"""
+        is_visible = self.calendar.isVisible()
+        self.calendar.setVisible(not is_visible)
+        self.btn_add_date.setVisible(not is_visible)
+        if not is_visible:
+            self.append_log("Custom date selection enabled - use calendar below", "INFO")
+        else:
+            self.append_log("Custom date selection disabled", "INFO")
+
     def update_stats(self):
         groups_count = len(selected_groups)
         dates_count = len(selected_dates)
@@ -620,7 +638,7 @@ class ScraperGUI(QMainWindow):
 
     def check_updates(self):
         import webbrowser
-        webbrowser.open("https://github.com/your-repo/5ai-scraper")
+        webbrowser.open("https://github.com/vishal24102002/scrapper")
         self.append_log("Opening update page in browser...", "INFO")
 
     def export_config(self):
@@ -1199,3 +1217,4 @@ class ScraperGUI(QMainWindow):
                 QMessageBox.warning(self, "File Not Found", f"Transcription script not found:\n{script_path}")
         except Exception as e:
             self.append_log(f"✗ Failed to start transcription: {e}", "ERROR")
+
