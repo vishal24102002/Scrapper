@@ -6,7 +6,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QTextEdit, QCheckBox, QCalendarWidget,
     QLineEdit, QFileDialog, QGroupBox, QSpacerItem, QSizePolicy,
-    QMessageBox, QDialog, QListWidget, QProgressBar, QMenu, QToolButton
+    QMessageBox, QDialog, QListWidget, QProgressBar, QMenu, QToolButton,
+    QInputDialog
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QDate, QSettings, QSize
 from PyQt6.QtGui import QFont, QPalette, QColor, QTextCursor, QIcon, QAction, QTextCharFormat
@@ -59,27 +60,64 @@ class ScraperThread(QThread):
     progress_signal = pyqtSignal(int)
     bytes_signal = pyqtSignal(int)
     finished_signal = pyqtSignal(bool)  # success
-
+    input_required_signal = pyqtSignal(str)  # prompt message
+    
     def __init__(self, cmd):
         super().__init__()
         self.cmd = cmd
         self._is_running = True
+        self.user_input = None
+        self.input_event = None
 
     def stop(self):
         self._is_running = False
+
+    def provide_input(self, user_input):
+        """Called from main thread to provide user input"""
+        self.user_input = user_input
+        if self.input_event:
+            self.input_event.set()
 
     def run(self):
         global current_process
         try:
             current_process = subprocess.Popen(
-                self.cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding='utf-8', bufsize=1
+                self.cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE,  # Enable stdin for input
+                text=True, 
+                encoding='utf-8', 
+                bufsize=1
             )
+            
             for line in iter(current_process.stdout.readline, ''):
                 if not self._is_running:
                     break
                 if line:
                     line = line.rstrip()
+                    
+                    # Check if script is asking for input
+                    if any(prompt in line.lower() for prompt in [
+                        "enter phone number", "enter your phone", "phone number:",
+                        "enter code", "enter the code", "code:", "otp",
+                        "enter password", "password:", "2fa"
+                    ]):
+                        self.log_signal.emit(line, "WARNING")
+                        self.input_required_signal.emit(line)
+                        # Wait for main thread to provide input
+                        import threading
+                        self.input_event = threading.Event()
+                        self.input_event.wait(timeout=300)  # 5 minute timeout
+                        
+                        if self.user_input and current_process and current_process.stdin:
+                            current_process.stdin.write(self.user_input + '\n')
+                            current_process.stdin.flush()
+                            self.log_signal.emit(f"✓ Input provided", "SUCCESS")
+                        self.user_input = None
+                        self.input_event = None
+                        continue
+                    
                     # Parse special markers
                     if line.startswith("BYTES_DOWNLOADED:"):
                         try:
@@ -419,13 +457,20 @@ class ScraperGUI(QMainWindow):
         self.btn_start.setToolTip("Begin scraping selected groups and dates")
         action_layout.addWidget(self.btn_start)
 
-        self.btn_stop = QPushButton("⏹ STOP")
+        self.btn_stop = QPushButton("🛑 STOP")
         self.btn_stop.setObjectName("stopButton")
         self.btn_stop.clicked.connect(self.stop_scraping)
         self.btn_stop.setEnabled(False)
         self.btn_stop.setToolTip("Stop current scraping operation")
         action_layout.addWidget(self.btn_stop)
         left_layout.addLayout(action_layout)
+        
+        # Auth setup button
+        self.btn_setup_auth = QPushButton("🔐 Setup Telegram Auth")
+        self.btn_setup_auth.clicked.connect(self.setup_telegram_auth)
+        self.btn_setup_auth.setToolTip("Setup Telegram authentication for first-time use")
+        self.btn_setup_auth.setStyleSheet("background-color: #9500ff;")
+        left_layout.addWidget(self.btn_setup_auth)
 
         transcribe_layout = QHBoxLayout()
         self.btn_transcribe = QPushButton("🎙 Transcription")
@@ -445,7 +490,7 @@ class ScraperGUI(QMainWindow):
         middle_column = QVBoxLayout()
         
         # Stats bar
-        stats_panel = QGroupBox("📊 Statistics")
+        stats_panel = QGroupBox("📈 Statistics")
         stats_layout = QVBoxLayout()
         self.stats_label = QLabel("Groups: 0 | Dates: 0 | Data Types: None")
         self.stats_label.setObjectName("statsLabel")
@@ -525,7 +570,6 @@ class ScraperGUI(QMainWindow):
         self.btn_import.setToolTip("Import configuration from JSON file")
         settings_layout.addWidget(self.btn_import)
 
-
         settings_layout.addSpacerItem(QSpacerItem(20, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
 
         self.btn_set_default = QPushButton("💾 Set as Default Directory")
@@ -561,7 +605,6 @@ class ScraperGUI(QMainWindow):
         self.btn_open_folder.setToolTip("Open target folder in file explorer")
         settings_layout.addWidget(self.btn_open_folder)
 
-
         settings_layout.addSpacerItem(QSpacerItem(20, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
         
         log_grid=QGridLayout()
@@ -578,27 +621,33 @@ class ScraperGUI(QMainWindow):
 
         settings_layout.addLayout(log_grid)
 
-        settings_layout.addStretch()
-
         self.btn_check_updates = QPushButton("🔄 Check for Updates")
         self.btn_check_updates.clicked.connect(self.check_updates)
         self.btn_check_updates.setToolTip("Check for new version")
         settings_layout.addWidget(self.btn_check_updates)
 
-        
+        settings_layout.addStretch()
+
+        # Create a horizontal container for both widgets
+        bottom_row = QHBoxLayout()
+
         # Theme toggle button with eye icon (compact)
         self.btn_theme = QPushButton("👁")
         self.btn_theme.setObjectName("themeButton")
         self.btn_theme.clicked.connect(self.toggle_theme)
         self.btn_theme.setToolTip("Toggle Dark/Light Mode")
         self.btn_theme.setMaximumSize(50, 40)
-        settings_layout.addWidget(self.btn_theme)
-        
-        # Version label at bottom
+        bottom_row.addWidget(self.btn_theme)
+
+        # Version label
         version_label = QLabel(f"5AI Scraper {VERSION}")
         version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        version_label.setStyleSheet("color: #888; font-size: 11px;")
-        settings_layout.addWidget(version_label)
+        version_label.setStyleSheet("color: #FFFFFF; font-size: 11px; font-weight: bold;")
+        bottom_row.addWidget(version_label)
+
+        # Add the horizontal layout to your settings layout
+        settings_layout.addLayout(bottom_row)
+
         
         settings_panel.setLayout(settings_layout)
 
@@ -638,7 +687,7 @@ class ScraperGUI(QMainWindow):
 
     def check_updates(self):
         import webbrowser
-        webbrowser.open("https://github.com/vishal24102002/scrapper")
+        webbrowser.open("https://github.com/your-repo/5ai-scraper")
         self.append_log("Opening update page in browser...", "INFO")
 
     def export_config(self):
@@ -1144,8 +1193,51 @@ class ScraperGUI(QMainWindow):
         self.scraper_thread = ScraperThread(cmd)
         self.scraper_thread.log_signal.connect(lambda msg, lvl: self.text_queue.put((msg, lvl)))
         self.scraper_thread.bytes_signal.connect(self.update_bytes_downloaded)
+        self.scraper_thread.input_required_signal.connect(self.handle_input_request)
         self.scraper_thread.finished_signal.connect(self.scraping_finished)
         self.scraper_thread.start()
+
+    def handle_input_request(self, prompt):
+        """Handle input requests from Telethon (phone, OTP, password)"""
+        self.append_log("⚠ User input required!", "WARNING")
+        
+        # Determine what type of input is needed
+        prompt_lower = prompt.lower()
+        if "phone" in prompt_lower:
+            title = "Telegram Authentication"
+            label = "Enter your phone number (with country code, e.g., +919876543210):"
+            echo_mode = QLineEdit.EchoMode.Normal
+        elif "code" in prompt_lower or "otp" in prompt_lower:
+            title = "Telegram OTP"
+            label = "Enter the verification code sent to your Telegram:"
+            echo_mode = QLineEdit.EchoMode.Normal
+        elif "password" in prompt_lower or "2fa" in prompt_lower:
+            title = "Telegram 2FA Password"
+            label = "Enter your 2FA password:"
+            echo_mode = QLineEdit.EchoMode.Password
+        else:
+            title = "Input Required"
+            label = prompt
+            echo_mode = QLineEdit.EchoMode.Normal
+        
+        # Create input dialog
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setLabelText(label)
+        dialog.setTextEchoMode(echo_mode)
+        dialog.resize(500, 150)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            user_input = dialog.textValue()
+            if user_input:
+                self.scraper_thread.provide_input(user_input)
+                self.append_log(f"✓ Input submitted", "SUCCESS")
+            else:
+                self.append_log("✗ No input provided", "ERROR")
+                self.scraper_thread.provide_input("")  # Send empty to continue
+        else:
+            self.append_log("✗ Input cancelled by user", "ERROR")
+            self.scraper_thread.provide_input("")  # Send empty to continue
 
     def stop_scraping(self):
         global scraping_active, current_process
@@ -1218,3 +1310,24 @@ class ScraperGUI(QMainWindow):
         except Exception as e:
             self.append_log(f"✗ Failed to start transcription: {e}", "ERROR")
 
+    def setup_telegram_auth(self):
+        """Guide user through Telegram authentication setup"""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setWindowTitle("Telegram Authentication Setup")
+        msg.setText(
+            "First-time Telegram Setup\n\n"
+            "This will authenticate your Telegram account for scraping.\n\n"
+            "You will need:\n"
+            "• Your phone number (with country code)\n"
+            "• Access to your Telegram app for OTP\n"
+            "• 2FA password (if enabled)\n\n"
+            "The authentication will happen automatically when you start scraping.\n"
+            "Input dialogs will appear when needed."
+        )
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
+        
+        self.append_log("=" * 50, "INFO")
+        self.append_log("ℹ When you start scraping, authentication dialogs will appear if needed", "INFO")
+        self.append_log("=" * 50, "INFO")
