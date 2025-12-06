@@ -3,16 +3,19 @@
 .db
 
 # Python
+venv/
 __pycache__/
 *.pyc
 .env
 5ai-scrapper/
+venv/
 additional_file/
 .env/
 
 # Node / Angular
 node_modules/
 dist/
+venv/
 .env
 
 # Logs
@@ -34,4 +37,7 @@ logs/
 
 #sessions-file
 *.session
+*.config
 
+#datafiles
+data_files/
