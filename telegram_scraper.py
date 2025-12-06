@@ -51,7 +51,7 @@ download_start_time = 0
 GROUPS_FILE_PATH = os.path.join(BASE_DIR,"data_files",'selected_groups.txt')
 DATA_TYPES_FILE_PATH = os.path.join("data_files",'selected_data_types.txt')
 SELECTED_DATES_FILE_PATH = os.path.join("data_files",'selected_dates.txt')
-TARGET_FOLDER = os.path.join("data_files","Database")
+TARGET_FOLDER =config("TAR_DIR", default=os.getcwd())
 CONFIG_FILE = os.path.join("data_files", "config.json")
 
 # ====================== Worker Thread ======================
@@ -403,8 +403,8 @@ class ScraperGUI(QMainWindow):
         preset_layout = QGridLayout()
         presets = [
             ("Yesterday", 1, "Select yesterday's date"),
-            ("Last 7 Days", 7, "Select past week"),
             ("Last 30 Days", 30, "Select past month"),
+            ("Last 2 years", 730, "Select past 2 years"),
             ("Custom", 0, "Select custom dates from calendar")
         ]
         for i, (label, days, tooltip) in enumerate(presets):
@@ -473,16 +473,22 @@ class ScraperGUI(QMainWindow):
         left_layout.addWidget(self.btn_setup_auth)
 
         transcribe_layout = QHBoxLayout()
-        self.btn_transcribe = QPushButton("🎙 Transcription")
+        self.btn_transcribe = QPushButton("Transcript ALL")
         self.btn_transcribe.clicked.connect(self.start_transcription)
         self.btn_transcribe.setToolTip("Launch video transcription tool")
         transcribe_layout.addWidget(self.btn_transcribe)
         
-        self.btn_fetch_news = QPushButton("📰 Fetch News")
+        self.btn_transcribe = QPushButton("Transcript Selected Date")
+        self.btn_transcribe.clicked.connect(self.start_transcription)
+        self.btn_transcribe.setToolTip("Launch video transcription tool")
+        transcribe_layout.addWidget(self.btn_transcribe)
+
+        left_layout.addLayout(transcribe_layout)
+        
+        self.btn_fetch_news = QPushButton("Fetch News")
         self.btn_fetch_news.clicked.connect(lambda: self.append_log("Fetch News - coming soon", "INFO"))
         self.btn_fetch_news.setToolTip("Fetch news articles (coming soon)")
-        transcribe_layout.addWidget(self.btn_fetch_news)
-        left_layout.addLayout(transcribe_layout)
+        left_layout.addWidget(self.btn_fetch_news)
 
         left_layout.addStretch()
 
@@ -1046,16 +1052,16 @@ class ScraperGUI(QMainWindow):
                     with open(env_path, 'w') as f:
                         found = False
                         for line in lines:
-                            if line.startswith('BASE_DIR='):
-                                f.write(f'BASE_DIR={TARGET_FOLDER}\n')
+                            if line.startswith('TAR_DIR='):
+                                f.write(f'TAR_DIR={TARGET_FOLDER}\n')
                                 found = True
                             else:
                                 f.write(line)
                         if not found:
-                            f.write(f'\nBASE_DIR={TARGET_FOLDER}\n')
+                            f.write(f'\nTAR_DIR={TARGET_FOLDER}\n')
                 else:
                     with open(env_path, 'w') as f:
-                        f.write(f'BASE_DIR={TARGET_FOLDER}\n')
+                        f.write(f'TAR_DIR={TARGET_FOLDER}\n')
                 
                 self.append_log(f"✓ Default directory updated in .env", "SUCCESS")
                 QMessageBox.information(self, "Success", f"Default directory updated!\n\n{TARGET_FOLDER}")

@@ -34,11 +34,6 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-CONFIG_FILE_PATH = os.path.join(BASE_DIR, "telethon.config")
-if not os.path.exists(CONFIG_FILE_PATH):
-    logging.error(f"Configuration file not found at {CONFIG_FILE_PATH}")
-    sys.exit(1)
-
 api_id = config("api_id")
 api_hash = config("api_hash")
 
@@ -198,11 +193,11 @@ def save_youtube_transcript_to_file(url, transcript_folder):
     # If file already exists → skip
     if os.path.exists(filepath):
         return filename
-
+    
     # === TRY TO GET TRANSCRIPT ===
     transcript_success = False
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        transcript_list = YouTubeTranscriptApi().list(video_id)
         try:
             transcript = transcript_list.find_transcript(['en'])
         except:
@@ -214,7 +209,6 @@ def save_youtube_transcript_to_file(url, transcript_folder):
                     transcript = next(iter(transcript_list._generated_transcripts.values()), None)
                 if not transcript:
                     raise NoTranscriptFound
-
         data = transcript.fetch()
         transcript_success = True
 
@@ -234,10 +228,8 @@ def save_youtube_transcript_to_file(url, transcript_folder):
         if transcript_success:
             f.write("TRANSCRIPT:\n")
             for entry in data:
-                start = str(timedelta(seconds=int(entry['start']))).lstrip('0:')
-                if start.startswith(':'): start = '0' + start
-                text = entry['text'].replace('\n', ' ').strip()
-                f.write(f"{start} - {text}\n")
+                text = entry.text.replace('\n', ' ').strip()
+                f.write(f"{text}\n")
         else:
             f.write(f"{error_msg}\n\n")
             f.write("FULL VIDEO DESCRIPTION:\n")
@@ -336,7 +328,7 @@ async def process_chat(client, chat, scrape_date_folder, datatype_filter, scrape
                     await handle_media(client, message, selected_folders["Audios"], ext)
                     processed = True
 
-                elif "Text" in datatype_filter and message_text.strip() and not message.media:
+                elif "Text" in datatype_filter and message_text.strip() and message.message:
                     if text_file:
                         entry = f"[{message.date.strftime('%Y-%m-%d %H:%M:%S')}] Sender ID: {sender_id}\n{message_text}\n\n"
                         text_file.write(entry)

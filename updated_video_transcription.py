@@ -1,207 +1,188 @@
-import os
-import sys
 import subprocess
-import threading
-import time
-import queue
-import re
-import logging
-import sqlite3
-from datetime import datetime, timedelta
-import customtkinter as ctk
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-from tkcalendar import Calendar
-import telethon
-import ffmpeg
-from vosk import Model, KaldiRecognizer
+import sys
+import os
 import json
+import wave
+import langdetect
 
-BASE_DIR = r"C:\\Users\\Ashutosh Mishra\\Desktop\\STUDY\\Coding\\goldenagemeditations project\\dynamic path"
-TARGET_FOLDER = r"C:\\Users\\Ashutosh Mishra\\Desktop\\STUDY\\Coding\\goldenagemeditations project\\dynamic path\\Database"
-# Path to the Vosk model
-if getattr(sys, 'frozen', False):  # If the script is running as a frozen executable
-    base_dir = os.path.dirname(sys.executable)
-else:
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+# Get the base directory
+base_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+print(base_dir)
 
-VOSK_MODEL_PATH = os.path.join(BASE_DIR, 'vosk-model-en-us-0.22')
+try:
+    import tkinter
+except ImportError:
+    print("tkinter missing. Install Python with Tk support.")
+    sys.exit(1)
 
-# Check if the Vosk model exists
-if not os.path.exists(VOSK_MODEL_PATH):
-    logging.error(f"Vosk model not found at {VOSK_MODEL_PATH}. Please ensure the model is downloaded and placed correctly.")
-    messagebox.showerror("Model Not Found", f"Vosk model not found at {VOSK_MODEL_PATH}. Please ensure the model is downloaded and placed correctly.")
+from vosk import Model, KaldiRecognizer
+import whisper
 
-# Initialize global flags
-transcription_active = False  # Global flag to track transcription state
 
-# Function to transcribe a single audio file
-def transcribe_audio(audio_path, model):
-    try:
-        wf = open(audio_path, "rb")
-        rec = KaldiRecognizer(model, 16000)
-        rec.SetWords(True)
-        
+# -------------------------
+# FORMAT TEXT
+# -------------------------
+def format_transcription(text):
+    text = text.replace(". ", ".\n")
+    text = text.replace("? ", "?\n")
+    text = text.replace("! ", "!\n")
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    return "\n".join(lines)
+
+
+# -------------------------
+# VOSK TRANSCRIPTION
+# -------------------------
+def transcribe_vosk(audio_path, model_path):
+    if not os.path.exists(model_path):
+        print(f"Vosk model path not found: {model_path}")
+        return ""
+
+    model = Model(model_path)
+    recognizer = KaldiRecognizer(model, 16000)
+    text = ""
+
+    with wave.open(audio_path, "rb") as wf:
+        if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getframerate() != 16000:
+            print("Audio must be 16KHz, mono, PCM WAV.")
+            return ""
+
         while True:
-            data = wf.read(4000)
-            if len(data) == 0:
+            data = wf.readframes(4000)
+            if not data:
                 break
-            if rec.AcceptWaveform(data):
-                pass  # You can handle partial results here if needed
-        result = rec.FinalResult()
-        result_dict = json.loads(result)
-        transcription = result_dict.get("text", "")
-        wf.close()
-        return transcription
+
+            if recognizer.AcceptWaveform(data):
+                res = json.loads(recognizer.Result())
+                text += res.get("text", "") + " "
+
+        res = json.loads(recognizer.FinalResult())
+        text += res.get("text", "")
+
+    return text
+
+
+# -------------------------
+# WHISPER TRANSCRIPTION
+# -------------------------
+def transcribe_whisper(audio_path):
+    try:
+        model = whisper.load_model("base")
+        result = model.transcribe(audio_path)
+        return result.get("text", "")
     except Exception as e:
-        logging.error(f"Error transcribing {audio_path}: {e}")
-        return f"Error transcribing {audio_path}: {e}"
+        print(f"Whisper failed: {e}")
+        return ""
 
-# Function to convert video to audio using ffmpeg
-def convert_video_to_audio(video_path, audio_path):
+
+# -------------------------
+# DETECT LANGUAGE FROM TEXT
+# -------------------------
+def detect_language(text):
     try:
-        ffmpeg.input(video_path).output(audio_path, format='wav', ac=1, ar='16000').overwrite_output().run(quiet=True)
-        return True
-    except ffmpeg.Error as e:
-        logging.error(f"ffmpeg error for {video_path}: {e}")
-        return False
+        return langdetect.detect(text)
+    except:
+        return "unknown"
 
-# Function to run the transcription process
-def run_transcription_process(text_queue, selected_date):
-    global transcription_active  # Reusing transcription_active to indicate transcription status
 
+# -------------------------
+# TRANSLATE TO ENGLISH USING WHISPER
+# -------------------------
+def translate_to_english(audio_path):
     try:
-        if not selected_date:
-            text_queue.put("No date selected for transcription.")
-            logging.error("No date selected for transcription.")
-            return
-
-        # Path to the selected date folder
-        date_folder_path = os.path.join(TARGET_FOLDER, selected_date.strftime("%Y-%m-%d"))
-
-        if not os.path.exists(date_folder_path):
-            text_queue.put(f"Selected date folder does not exist: {date_folder_path}")
-            logging.error(f"Selected date folder does not exist: {date_folder_path}")
-            return
-
-        # Load the Vosk model
-        model = Model(VOSK_MODEL_PATH)
-        text_queue.put("Vosk model loaded successfully.")
-        logging.info("Vosk model loaded successfully.")
-
-        # Traverse each Telegram group folder
-        for group in selected_groups:
-            group_folder = os.path.join(date_folder_path, group)
-            videos_folder = os.path.join(group_folder, "Videos")
-
-            if not os.path.exists(videos_folder):
-                text_queue.put(f"No 'Videos' folder found for group: {group}")
-                logging.warning(f"No 'Videos' folder found for group: {group}")
-                continue
-
-            # Create Transcriptions folder if it doesn't exist
-            transcriptions_folder = os.path.join(videos_folder, "Transcriptions")
-            os.makedirs(transcriptions_folder, exist_ok=True)
-
-            # Iterate over all video files in the Videos folder
-            for video_file in os.listdir(videos_folder):
-                video_path = os.path.join(videos_folder, video_file)
-
-                # Check if the file is a video (you can extend this with more video formats)
-                if not video_file.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv')):
-                    continue
-
-                text_queue.put(f"Processing video: {video_file}")
-                logging.info(f"Processing video: {video_file}")
-
-                # Define paths for the audio and transcription files
-                audio_filename = os.path.splitext(video_file)[0] + ".wav"
-                audio_path = os.path.join(videos_folder, audio_filename)
-                transcription_filename = os.path.splitext(video_file)[0] + ".txt"
-                transcription_path = os.path.join(transcriptions_folder, transcription_filename)
-
-                # Convert video to audio
-                if convert_video_to_audio(video_path, audio_path):
-                    text_queue.put(f"Converted {video_file} to audio.")
-                    logging.info(f"Converted {video_file} to audio.")
-
-                    # Transcribe audio
-                    transcription = transcribe_audio(audio_path, model)
-                    if transcription:
-                        with open(transcription_path, "w", encoding='utf-8') as f:
-                            f.write(transcription)
-                        text_queue.put(f"Transcription saved: {transcription_filename}")
-                        logging.info(f"Transcription saved: {transcription_filename}")
-                    else:
-                        text_queue.put(f"Failed to transcribe: {video_file}")
-                        logging.error(f"Failed to transcribe: {video_file}")
-
-                    # Remove the temporary audio file
-                    os.remove(audio_path)
-                    logging.debug(f"Removed temporary audio file: {audio_path}")
-                else:
-                    text_queue.put(f"Failed to convert {video_file} to audio.")
-                    logging.error(f"Failed to convert {video_file} to audio.")
-
-        text_queue.put("Transcription process completed successfully.")
-        logging.info("Transcription process completed successfully.")
-
+        model = whisper.load_model("small")
+        result = model.transcribe(audio_path, task="translate")
+        return result.get("text", "")
     except Exception as e:
-        text_queue.put(f"Error during transcription: {str(e)}")
-        logging.error(f"Error during transcription: {e}")
+        print(f"Translation failed: {e}")
+        return ""
 
-# Function to update the textbox from the queue for transcription
-def update_transcription_textbox_from_queue(text_queue):
-    try:
-        while True:
-            text = text_queue.get_nowait()
-            update_textbox(text)
-    except queue.Empty:
-        pass
-    if transcription_active:
-        app.after(100, lambda: update_transcription_textbox_from_queue(text_queue))
 
-# Function to start the transcription process
-def start_transcription():
-    global transcription_active
-    global selected_date
+# -------------------------
+# EXTRACT AUDIO USING FFMPEG
+# -------------------------
+def extract_audio(video_path, output_audio_path):
+    command = f'ffmpeg -i "{video_path}" -ar 16000 -ac 1 -vn "{output_audio_path}" -y'
+    os.system(command)
 
-    if transcription_active:
-        update_textbox("Transcription is already in progress.")
-        logging.warning("Attempted to start transcription while already active.")
-        return
 
-    if not selected_date:
-        update_textbox("No date selected for transcription.")
-        logging.error("No date selected for transcription.")
-        return
+# -------------------------
+# RECURSIVE VIDEO SCAN
+# -------------------------
+def get_all_video_files(root_dir):
+    video_files = []
+    for root, dirs, files in os.walk(root_dir):
+        for file in files:
+            if file.lower().endswith(('.mkv', '.mp4', '.avi', '.mov')):
+                video_files.append(os.path.join(root, file))
+    return video_files
 
-    # Set transcription_active flag
-    transcription_active = True
-    logging.debug("Transcription process started.")
-    update_textbox("Transcription process started.")
 
-    # Set status light to green (running)
-    update_status_light(RUNNING_COLOR)
+# -------------------------
+# MAIN PROCESSING
+# -------------------------
+if len(sys.argv) > 1:
+    videos_dir = sys.argv[1]
+else:
+    videos_dir = os.path.join(base_dir, "data_files", "Database")
 
-    # Create a queue for capturing output
-    text_queue = queue.Queue()
+transcription_folder = os.path.join(videos_dir, "Transcription")
+os.makedirs(transcription_folder, exist_ok=True)
 
-    # Start the transcription process in a separate thread
-    transcription_thread = threading.Thread(target=run_transcription_process, args=(text_queue, selected_date), daemon=True)
-    transcription_thread.start()
-    logging.debug("Transcription thread started.")
+vosk_model_path = r"C:\\Users\\Ashutosh Mishra\\Desktop\\STUDY\\Coding\\vosk-model-en-us-0.22"
 
-    # Start updating the textbox from the queue
-    update_transcription_textbox_from_queue(text_queue)
+video_files = get_all_video_files(videos_dir)
+print(f"Found {len(video_files)} video files to process.\n")
 
-    # Reset transcription_active flag when thread finishes
-    def check_thread():
-        if not transcription_thread.is_alive():
-            transcription_active = False
-            update_status_light(IDLE_COLOR)
-            logging.debug("Transcription process set to inactive.")
-        else:
-            app.after(100, check_thread)
+for video_path in video_files:
+    file_name = os.path.splitext(os.path.basename(video_path))[0]
+    print(f"\n==============================")
+    print(f"Processing: {file_name}")
+    print("==============================")
 
-    app.after(100, check_thread)
+    # Extract audio
+    audio_path = os.path.join(transcription_folder, file_name + ".wav")
+    extract_audio(video_path, audio_path)
+
+    # Transcription - Whisper preferred
+    transcription = transcribe_whisper(audio_path)
+
+    # Vosk fallback
+    if not transcription.strip():
+        print("Whisper failed or returned empty. Using Vosk...")
+        transcription = transcribe_vosk(audio_path, vosk_model_path)
+
+    if not transcription.strip():
+        print("No transcription available.")
+        continue
+
+    # Detect language
+    print("Detecting language...")
+    detected_lang = detect_language(transcription)
+    print(f"Detected language: {detected_lang}")
+
+    # -------------------------
+    # SAVE ONLY ONE FILE
+    # -------------------------
+
+    # CASE 1: Already English → Save as <name>_transcription.txt
+    if detected_lang == "en":
+        output_file = os.path.join(transcription_folder, file_name + "_transcription.txt")
+        final_text = transcription
+        print("Language is English → saving without translation.")
+
+    # CASE 2: Not English → Translate → Save ONLY translated file
+    else:
+        print("Non-English detected → translating to English...")
+        final_text = translate_to_english(audio_path)
+        output_file = os.path.join(transcription_folder, file_name + "_transcription_english.txt")
+
+    # Save output
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(format_transcription(final_text))
+
+    # Remove temp audio
+    if os.path.exists(audio_path):
+        os.remove(audio_path)
+
+print("\nTranscription + Conditional English Translation complete!")
