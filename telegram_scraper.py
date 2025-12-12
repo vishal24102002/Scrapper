@@ -426,6 +426,7 @@ class ScraperGUI(QMainWindow):
         self.calendar.setVisible(False)  # Hidden by default
         left_layout.addWidget(self.calendar)
         
+        
         date_btn_layout = QHBoxLayout()
         self.btn_add_date = QPushButton("➕ Add Date")
         self.btn_add_date.clicked.connect(self.add_selected_date)
@@ -447,6 +448,26 @@ class ScraperGUI(QMainWindow):
         self.dates_list.setToolTip("Right-click to remove individual dates")
         left_layout.addWidget(self.dates_list)
         
+        left_layout.addSpacerItem(QSpacerItem(20, 15, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+        
+        # === AUTO TRANSCRIPTION CHECKBOX ===
+        self.auto_transcribe_checkbox = QCheckBox("Auto-transcribe videos after scraping")
+        self.auto_transcribe_checkbox.setChecked(True)  # Optional: default on
+        self.auto_transcribe_checkbox.setStyleSheet("""
+            QCheckBox {
+                font-size: 14px;
+                font-weight: bold;
+                color: #00ffaa;
+                spacing: 10px;
+            }
+            QCheckBox::indicator {
+                width: 20px;
+                height: 20px;
+            }
+        """)
+        self.auto_transcribe_checkbox.setToolTip("If checked, videos will be automatically transcribed after scraping completes")
+        left_layout.addWidget(self.auto_transcribe_checkbox)
+
         left_layout.addSpacerItem(QSpacerItem(20, 15, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
 
         # Action Buttons
@@ -472,19 +493,6 @@ class ScraperGUI(QMainWindow):
         self.btn_setup_auth.setStyleSheet("background-color: #9500ff;")
         left_layout.addWidget(self.btn_setup_auth)
 
-        transcribe_layout = QHBoxLayout()
-        self.btn_transcribe = QPushButton("Transcript ALL")
-        self.btn_transcribe.clicked.connect(self.start_transcription)
-        self.btn_transcribe.setToolTip("Launch video transcription tool")
-        transcribe_layout.addWidget(self.btn_transcribe)
-        
-        self.btn_transcribe = QPushButton("Transcript Selected Date")
-        self.btn_transcribe.clicked.connect(self.start_transcription)
-        self.btn_transcribe.setToolTip("Launch video transcription tool")
-        transcribe_layout.addWidget(self.btn_transcribe)
-
-        left_layout.addLayout(transcribe_layout)
-        
         self.btn_fetch_news = QPushButton("Fetch News")
         self.btn_fetch_news.clicked.connect(lambda: self.append_log("Fetch News - coming soon", "INFO"))
         self.btn_fetch_news.setToolTip("Fetch news articles (coming soon)")
@@ -1303,13 +1311,17 @@ class ScraperGUI(QMainWindow):
                 )
             except:
                 pass
+        
+        if success and self.auto_transcribe_checkbox.isChecked():
+            self.append_log("Auto-transcription enabled → Starting transcription of downloaded videos...", "SUCCESS")
+            QTimer.singleShot(2000, self.start_transcription)  # Delay 2s to avoid race condition
 
     def start_transcription(self):
         try:
             script_path = 'updated_video_transcription.py'
             if os.path.exists(script_path):
-                subprocess.Popen([sys.executable, script_path])
-                self.append_log("✓ Transcription tool launched", "SUCCESS")
+                subprocess.Popen([sys.executable, script_path, TARGET_FOLDER], cwd=os.getcwd())
+                self.append_log("Video transcription started in background...", "SUCCESS")
             else:
                 self.append_log(f"✗ Script not found: {script_path}", "ERROR")
                 QMessageBox.warning(self, "File Not Found", f"Transcription script not found:\n{script_path}")
