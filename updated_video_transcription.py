@@ -4,20 +4,15 @@ import os
 import json
 import wave
 import langdetect
-
-# Get the base directory
-base_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-print(base_dir)
-
-try:
-    import tkinter
-except ImportError:
-    print("tkinter missing. Install Python with Tk support.")
-    sys.exit(1)
-
+from decouple import config
 from vosk import Model, KaldiRecognizer
 import whisper
 
+vosk_model_path = config("Vosk_Model")
+
+# Get the base directory
+base_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+print("base directory path is ",base_dir)
 
 # -------------------------
 # FORMAT TEXT
@@ -28,7 +23,6 @@ def format_transcription(text):
     text = text.replace("! ", "!\n")
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     return "\n".join(lines)
-
 
 # -------------------------
 # VOSK TRANSCRIPTION
@@ -111,12 +105,15 @@ def extract_audio(video_path, output_audio_path):
 # -------------------------
 def get_all_video_files(root_dir):
     video_files = []
+    audio_files= []
     for root, dirs, files in os.walk(root_dir):
         for file in files:
             if file.lower().endswith(('.mkv', '.mp4', '.avi', '.mov')):
                 video_files.append(os.path.join(root, file))
-    return video_files
 
+            elif file.lower().endswith(()):
+                audio_files.append(os.path.join(root, file))
+    return audio_files,video_files
 
 # -------------------------
 # MAIN PROCESSING
@@ -129,16 +126,15 @@ else:
 transcription_folder = os.path.join(videos_dir, "Transcription")
 os.makedirs(transcription_folder, exist_ok=True)
 
-vosk_model_path = r"C:\\Users\\Ashutosh Mishra\\Desktop\\STUDY\\Coding\\vosk-model-en-us-0.22"
+audio_files,video_files = get_all_video_files(videos_dir)
+print(f"Found {len(audio_files)} audio {len(video_files)} video files to process.\n")
 
-video_files = get_all_video_files(videos_dir)
-print(f"Found {len(video_files)} video files to process.\n")
+print(f"\n==============================")
+print(f"Processing: {video_files}")
+print("==============================")
 
 for video_path in video_files:
     file_name = os.path.splitext(os.path.basename(video_path))[0]
-    print(f"\n==============================")
-    print(f"Processing: {file_name}")
-    print("==============================")
 
     # Extract audio
     audio_path = os.path.join(transcription_folder, file_name + ".wav")
