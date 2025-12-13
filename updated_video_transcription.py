@@ -6,6 +6,7 @@ import wave
 import argparse
 import langdetect
 from decouple import config
+import torch
 from vosk import Model, KaldiRecognizer
 import whisper
 
@@ -23,6 +24,15 @@ parser.add_argument('base_dir', type=str, help='Base directory containing date f
 args = parser.parse_args()
 
 base_database_dir = args.base_dir
+
+if torch.cuda.is_available():
+    print(f"GPU available: {torch.cuda.get_device_name(0)}")
+    device = "cuda"
+else:
+    print("GPU not available, falling back to CPU")
+    device = "cpu"
+
+model = whisper.load_model("base", device=device)  # or whatever model you use: base, small, medium, large-v3, etc.
 
 # -------------------------
 # READ SELECTED DATES
@@ -87,7 +97,6 @@ def transcribe_vosk(audio_path, model_path):
 # -------------------------
 def transcribe_whisper(audio_path):
     try:
-        model = whisper.load_model("base")
         result = model.transcribe(audio_path)
         return result.get("text", "")
     except Exception as e:
@@ -110,7 +119,6 @@ def detect_language(text):
 # -------------------------
 def translate_to_english(audio_path):
     try:
-        model = whisper.load_model("small")
         result = model.transcribe(audio_path, task="translate")
         return result.get("text", "")
     except Exception as e:
@@ -210,11 +218,11 @@ for folder_name in selected_folders:
         if detected_lang == "en":
             output_file = os.path.join(transcription_folder, file_name + "_transcription.txt")
             final_text = transcription
-            print("Language is English → saving without translation.")
+            print("Language is English -> saving without translation.")
         
         # CASE 2: Not English → Translate → Save ONLY translated file
         else:
-            print("Non-English detected → translating to English...")
+            print("Non-English detected -> translating to English...")
             final_text = translate_to_english(audio_path)
             output_file = os.path.join(transcription_folder, file_name + "_transcription_english.txt")
         
