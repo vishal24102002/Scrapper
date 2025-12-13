@@ -74,9 +74,13 @@ class ScraperThread(QThread):
 
     def provide_input(self, user_input):
         """Called from main thread to provide user input"""
-        self.user_input = user_input
-        if self.input_event:
-            self.input_event.set()
+        if current_process and current_process.stdin and current_process.poll() is None:
+            input_text = user_input.strip() + '\n'
+            current_process.stdin.write(input_text)
+            current_process.stdin.flush()
+            self.log_signal.emit(f"✓ Input sent: {user_input.strip()}", "SUCCESS")
+        else:
+            self.log_signal.emit("✗ Failed to send input — process not running", "ERROR")
 
     def run(self):
         global current_process
@@ -92,48 +96,34 @@ class ScraperThread(QThread):
             )
             
             for line in iter(current_process.stdout.readline, ''):
-                if not self._is_running:
-                    break
-                if line:
-                    line = line.rstrip()
-                    
-                    # Check if script is asking for input
-                    if any(prompt in line.lower() for prompt in [
-                        "enter phone number", "enter your phone", "phone number:",
-                        "enter code", "enter the code", "code:", "otp",
-                        "enter password", "password:", "2fa"
-                    ]):
-                        self.log_signal.emit(line, "WARNING")
-                        self.input_required_signal.emit(line)
-                        # Wait for main thread to provide input
-                        import threading
-                        self.input_event = threading.Event()
-                        self.input_event.wait(timeout=300)  # 5 minute timeout
-                        
-                        if self.user_input and current_process and current_process.stdin:
-                            current_process.stdin.write(self.user_input + '\n')
-                            current_process.stdin.flush()
-                            self.log_signal.emit(f"✓ Input provided", "SUCCESS")
-                        self.user_input = None
-                        self.input_event = None
-                        continue
-                    
-                    # Parse special markers
-                    if line.startswith("BYTES_DOWNLOADED:"):
-                        try:
-                            bytes_val = int(line.split(":")[1])
-                            self.bytes_signal.emit(bytes_val)
-                        except:
-                            pass
-                    elif "ERROR" in line.upper() or "FAILED" in line.upper():
-                        self.log_signal.emit(line, "ERROR")
-                    elif "WARNING" in line.upper():
-                        self.log_signal.emit(line, "WARNING")
-                    elif "SUCCESS" in line.upper() or "COMPLETED" in line.upper():
-                        self.log_signal.emit(line, "SUCCESS")
-                    else:
-                        self.log_signal.emit(line, "INFO")
-            
+                line = line.rstrip('\n')
+                if not line:
+                    continue
+
+                # Always log normal lines
+                self.log_signal.emit(line, "INFO")
+
+                # === DETECT GUI INPUT REQUESTS ===
+                if line == "GUI_NEEDS_INPUT:PHONE":
+                    self.input_required_signal.emit("PHONE")
+                elif line == "GUI_NEEDS_INPUT:CODE":
+                    self.input_required_signal.emit("CODE")
+                elif line == "GUI_NEEDS_INPUT:PASSWORD":
+                    self.input_required_signal.emit("PASSWORD")
+                elif line == "GUI_AUTH_SUCCESS":
+                    self.log_signal.emit("✓ Signed in successfully to Telegram!", "SUCCESS")
+                elif line.startswith("GUI_AUTH_FAILED:"):
+                    error = line[len("GUI_AUTH_FAILED:"):]
+                    self.log_signal.emit(f"✗ Authentication failed: {error}", "ERROR")
+
+                # Your existing BYTES_DOWNLOADED handling
+                elif line.startswith("BYTES_DOWNLOADED:"):
+                    try:
+                        bytes_val = int(line.split(":")[1])
+                        self.bytes_signal.emit(bytes_val)
+                    except:
+                        pass
+
             current_process.wait()
             success = current_process.returncode == 0
             if self._is_running:
@@ -146,9 +136,6 @@ class ScraperThread(QThread):
             if self._is_running:
                 self.log_signal.emit(f"✗ Critical Error: {e}", "ERROR")
             self.finished_signal.emit(False)
-
-
-
 
 # Add this class at the top of your file (outside the main GUI class)
 class TranscriptionThread(QThread):
@@ -1261,47 +1248,28 @@ class ScraperGUI(QMainWindow):
         self.scraper_thread.finished_signal.connect(self.scraping_finished)
         self.scraper_thread.start()
 
-    def handle_input_request(self, prompt):
-        """Handle input requests from Telethon (phone, OTP, password)"""
-        self.append_log("⚠ User input required!", "WARNING")
-        
-        # Determine what type of input is needed
-        prompt_lower = prompt.lower()
-        if "phone" in prompt_lower:
-            title = "Telegram Authentication"
-            label = "Enter your phone number (with country code, e.g., +919876543210):"
-            echo_mode = QLineEdit.EchoMode.Normal
-        elif "code" in prompt_lower or "otp" in prompt_lower:
-            title = "Telegram OTP"
-            label = "Enter the verification code sent to your Telegram:"
-            echo_mode = QLineEdit.EchoMode.Normal
-        elif "password" in prompt_lower or "2fa" in prompt_lower:
-            title = "Telegram 2FA Password"
-            label = "Enter your 2FA password:"
-            echo_mode = QLineEdit.EchoMode.Password
+    def handle_input_request(self, input_type):
+        prompts = {
+            "PHONE": ("Telegram Login - Phone Number", "Enter your phone number (with country code):\nExample: +919876543210", "+91", QLineEdit.EchoMode.Normal),
+            "CODE": ("Verification Code", "Enter the code you received on Telegram:", "", QLineEdit.EchoMode.Normal),
+            "PASSWORD": ("2FA Password", "Enter your 2FA password (if enabled):", "", QLineEdit.EchoMode.Password),
+        }
+
+        if input_type not in prompts:
+            return
+
+        title, label, default, echo_mode = prompts[input_type]
+
+        text, ok = QInputDialog.getText(
+            self, title, label, echo_mode, default
+        )
+
+        if ok and text.strip():
+            self.scraper_thread.provide_input(text.strip())
+            self.append_log(f"✓ {input_type} submitted", "SUCCESS")
         else:
-            title = "Input Required"
-            label = prompt
-            echo_mode = QLineEdit.EchoMode.Normal
-        
-        # Create input dialog
-        dialog = QInputDialog(self)
-        dialog.setWindowTitle(title)
-        dialog.setLabelText(label)
-        dialog.setTextEchoMode(echo_mode)
-        dialog.resize(500, 150)
-        
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            user_input = dialog.textValue()
-            if user_input:
-                self.scraper_thread.provide_input(user_input)
-                self.append_log(f"✓ Input submitted", "SUCCESS")
-            else:
-                self.append_log("✗ No input provided", "ERROR")
-                self.scraper_thread.provide_input("")  # Send empty to continue
-        else:
-            self.append_log("✗ Input cancelled by user", "ERROR")
-            self.scraper_thread.provide_input("")  # Send empty to continue
+            self.scraper_thread.provide_input("")  # Send empty line if cancelled
+            self.append_log("✗ Input cancelled or empty", "WARNING")
 
     def stop_scraping(self):
         global scraping_active, current_process
@@ -1416,7 +1384,6 @@ class ScraperGUI(QMainWindow):
                     pass
         else:
             self.append_log("⚠ Transcription completed with errors. Check logs above.", "WARNING")
-        
         self.append_log("=" * 50, "INFO")
 
     def setup_telegram_auth(self):

@@ -359,9 +359,26 @@ async def process_chat(client, chat, scrape_date_folder, datatype_filter, scrape
 
 # Main scraper
 async def start_scraping(selected_groups, selected_datatypes, scrape_dates, target_folder, api_id, api_hash):
-    async with TelegramClient(
-        'session_name', 
-        api_id, 
+    print("working in scrapper")
+    # === CALLBACKS TO COMMUNICATE WITH GUI ===
+    def ask_phone():
+        print("GUI_NEEDS_INPUT:PHONE")  # Special marker
+        sys.stdout.flush()
+        return sys.stdin.readline().strip()
+
+    def ask_code():
+        print("GUI_NEEDS_INPUT:CODE")
+        sys.stdout.flush()
+        return sys.stdin.readline().strip()
+
+    def ask_password():
+        print("GUI_NEEDS_INPUT:PASSWORD")
+        sys.stdout.flush()
+        return sys.stdin.readline().strip()
+
+    client=TelegramClient(
+        'session_name',
+        api_id,
         api_hash,
         connection=ConnectionTcpFull,
         request_retries=10,
@@ -369,20 +386,28 @@ async def start_scraping(selected_groups, selected_datatypes, scrape_dates, targ
         retry_delay=2,
         proxy=None,
         system_version="Windows",
-        timeout=20) as client:
-        try:
-            await client.start()
-        except SessionPasswordNeededError:
-            password = input("2FA Password: ")
-            await client.start(password=password)
+        timeout=20
+    )
+    print("waiting and starting of the username and code part")
+    try:
+        await client.start(
+            phone=ask_phone,
+            code_callback=ask_code,
+            password=ask_password
+        )
+        print("GUI_AUTH_SUCCESS")  # Tell GUI we're logged in
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"GUI_AUTH_FAILED:{str(e)}")
+        sys.stdout.flush()
+        return
+    for scrape_date in scrape_dates:
+        date_folder = os.path.join(target_folder, scrape_date.strftime("%Y-%m-%d"))
+        os.makedirs(date_folder, exist_ok=True)
 
-        for scrape_date in scrape_dates:
-            date_folder = os.path.join(target_folder, scrape_date.strftime("%Y-%m-%d"))
-            os.makedirs(date_folder, exist_ok=True)
-
-            for chat in selected_groups:
-                print(f"Scraping {chat} | {scrape_date.strftime('%Y-%m-%d')}")
-                await process_chat(client, chat, date_folder, selected_datatypes, scrape_date)
+        for chat in selected_groups:
+            print(f"Scraping {chat} | {scrape_date.strftime('%Y-%m-%d')}")
+            await process_chat(client, chat, date_folder, selected_datatypes, scrape_date)
 
 # CLI
 if __name__ == '__main__':
