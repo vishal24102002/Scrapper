@@ -3,6 +3,7 @@ import sys
 import os
 import json
 import wave
+import argparse
 import langdetect
 from decouple import config
 from vosk import Model, KaldiRecognizer
@@ -10,9 +11,33 @@ import whisper
 
 vosk_model_path = config("Vosk_Model")
 
-# Get the base directory
-base_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-print("base directory path is ",base_dir)
+# Get the script directory
+script_dir = os.path.join(config("BASE_DIR"),"data_files")
+print("Script directory path is:", script_dir)
+
+# -------------------------
+# PARSE COMMAND LINE ARGUMENTS
+# -------------------------
+parser = argparse.ArgumentParser(description='Transcribe videos from selected date folders')
+parser.add_argument('base_dir', type=str, help='Base directory containing date folders')
+args = parser.parse_args()
+
+base_database_dir = args.base_dir
+
+# -------------------------
+# READ SELECTED DATES
+# -------------------------
+def read_selected_dates(file_path):
+    """Read folder names from selected_dates.txt"""
+    if not os.path.exists(file_path):
+        print(f"selected_dates.txt not found at: {file_path}")
+        return []
+    
+    with open(file_path, "r", encoding="utf-8") as f:
+        folders = [line.strip() for line in f if line.strip()]
+    
+    return folders
+
 
 # -------------------------
 # FORMAT TEXT
@@ -23,6 +48,7 @@ def format_transcription(text):
     text = text.replace("! ", "!\n")
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     return "\n".join(lines)
+
 
 # -------------------------
 # VOSK TRANSCRIPTION
@@ -105,80 +131,103 @@ def extract_audio(video_path, output_audio_path):
 # -------------------------
 def get_all_video_files(root_dir):
     video_files = []
-    audio_files= []
+    audio_files = []
     for root, dirs, files in os.walk(root_dir):
         for file in files:
             if file.lower().endswith(('.mkv', '.mp4', '.avi', '.mov')):
                 video_files.append(os.path.join(root, file))
-
-            elif file.lower().endswith(()):
+            elif file.lower().endswith(('.wav', '.mp3', '.flac', '.m4a')):
                 audio_files.append(os.path.join(root, file))
-    return audio_files,video_files
+    return audio_files, video_files
+
 
 # -------------------------
 # MAIN PROCESSING
 # -------------------------
-if len(sys.argv) > 1:
-    videos_dir = sys.argv[1]
-else:
-    videos_dir = os.path.join(base_dir, "data_files", "Database")
 
-transcription_folder = os.path.join(videos_dir, "Transcription")
-os.makedirs(transcription_folder, exist_ok=True)
+# Read selected folders from selected_dates.txt
+selected_dates_file = os.path.join(script_dir, "selected_dates.txt")
+selected_folders = read_selected_dates(selected_dates_file)
 
-audio_files,video_files = get_all_video_files(videos_dir)
-print(f"Found {len(audio_files)} audio {len(video_files)} video files to process.\n")
+if not selected_folders:
+    print("No folders found in selected_dates.txt. Exiting.")
+    sys.exit(1)
 
-print(f"\n==============================")
-print(f"Processing: {video_files}")
-print("==============================")
+print(f"Base database directory: {base_database_dir}")
+print(f"Found {len(selected_folders)} folders to process: {selected_folders}\n")
 
-for video_path in video_files:
-    file_name = os.path.splitext(os.path.basename(video_path))[0]
-
-    # Extract audio
-    audio_path = os.path.join(transcription_folder, file_name + ".wav")
-    extract_audio(video_path, audio_path)
-
-    # Transcription - Whisper preferred
-    transcription = transcribe_whisper(audio_path)
-
-    # Vosk fallback
-    if not transcription.strip():
-        print("Whisper failed or returned empty. Using Vosk...")
-        transcription = transcribe_vosk(audio_path, vosk_model_path)
-
-    if not transcription.strip():
-        print("No transcription available.")
+# Process each selected folder
+for folder_name in selected_folders:
+    folder_path = os.path.join(base_database_dir, folder_name)
+    
+    if not os.path.exists(folder_path):
+        print(f"WARNING: Folder not found: {folder_path}")
         continue
+    
+    print(f"\n{'='*50}")
+    print(f"Processing folder: {folder_name}")
+    print(f"{'='*50}")
+    
+    # Create transcription folder inside current folder
+    transcription_folder = os.path.join(folder_path, "Transcription")
+    os.makedirs(transcription_folder, exist_ok=True)
+    
+    # Get all video and audio files
+    audio_files, video_files = get_all_video_files(folder_path)
+    print(f"Found {len(audio_files)} audio file(s) and {len(video_files)} video file(s)")
+    
+    # Process video files
+    for video_path in video_files:
+        file_name = os.path.splitext(os.path.basename(video_path))[0]
+        print(f"\n--- Processing video: {file_name} ---")
+        
+        # Extract audio
+        audio_path = os.path.join(transcription_folder, file_name + ".wav")
+        extract_audio(video_path, audio_path)
+        
+        # Transcription - Whisper preferred
+        transcription = transcribe_whisper(audio_path)
+        
+        # Vosk fallback
+        if not transcription.strip():
+            print("Whisper failed or returned empty. Using Vosk...")
+            transcription = transcribe_vosk(audio_path, vosk_model_path)
+        
+        if not transcription.strip():
+            print("No transcription available.")
+            continue
+        
+        # Detect language
+        print("Detecting language...")
+        detected_lang = detect_language(transcription)
+        print(f"Detected language: {detected_lang}")
+        
+        # -------------------------
+        # SAVE ONLY ONE FILE
+        # -------------------------
+        
+        # CASE 1: Already English → Save as <name>_transcription.txt
+        if detected_lang == "en":
+            output_file = os.path.join(transcription_folder, file_name + "_transcription.txt")
+            final_text = transcription
+            print("Language is English → saving without translation.")
+        
+        # CASE 2: Not English → Translate → Save ONLY translated file
+        else:
+            print("Non-English detected → translating to English...")
+            final_text = translate_to_english(audio_path)
+            output_file = os.path.join(transcription_folder, file_name + "_transcription_english.txt")
+        
+        # Save output
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(format_transcription(final_text))
+        
+        print(f"Saved transcription: {output_file}")
+        
+        # Remove temp audio
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
 
-    # Detect language
-    print("Detecting language...")
-    detected_lang = detect_language(transcription)
-    print(f"Detected language: {detected_lang}")
-
-    # -------------------------
-    # SAVE ONLY ONE FILE
-    # -------------------------
-
-    # CASE 1: Already English → Save as <name>_transcription.txt
-    if detected_lang == "en":
-        output_file = os.path.join(transcription_folder, file_name + "_transcription.txt")
-        final_text = transcription
-        print("Language is English → saving without translation.")
-
-    # CASE 2: Not English → Translate → Save ONLY translated file
-    else:
-        print("Non-English detected → translating to English...")
-        final_text = translate_to_english(audio_path)
-        output_file = os.path.join(transcription_folder, file_name + "_transcription_english.txt")
-
-    # Save output
-    with open(output_file, "w", encoding="utf-8") as f:
-        f.write(format_transcription(final_text))
-
-    # Remove temp audio
-    if os.path.exists(audio_path):
-        os.remove(audio_path)
-
-print("\nTranscription + Conditional English Translation complete!")
+print("\n" + "="*50)
+print("Transcription + Conditional English Translation complete!")
+print("="*50)

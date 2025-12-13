@@ -147,6 +147,58 @@ class ScraperThread(QThread):
                 self.log_signal.emit(f"✗ Critical Error: {e}", "ERROR")
             self.finished_signal.emit(False)
 
+from PyQt5.QtCore import QThread, pyqtSignal, QTimer
+import subprocess
+import sys
+import os
+
+# Add this class at the top of your file (outside the main GUI class)
+class TranscriptionThread(QThread):
+    log_signal = pyqtSignal(str, str)  # (message, log_type)
+    finished_signal = pyqtSignal(bool)  # True if successful, False if failed
+    
+    def __init__(self, script_path, target_folder):
+        super().__init__()
+        self.script_path = script_path
+        self.target_folder = target_folder
+        self._is_running = True
+    
+    def run(self):
+        try:
+            process = subprocess.Popen(
+                [sys.executable, self.script_path, self.target_folder],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+            
+            # Read output line by line in real-time
+            while self._is_running:
+                line = process.stdout.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if line:
+                    self.log_signal.emit(line, "INFO")
+            
+            process.wait()
+            
+            if process.returncode == 0:
+                self.log_signal.emit("✓ Transcription completed successfully!", "SUCCESS")
+                self.finished_signal.emit(True)
+            else:
+                self.log_signal.emit(f"✗ Transcription failed with exit code {process.returncode}", "ERROR")
+                self.finished_signal.emit(False)
+                
+        except Exception as e:
+            self.log_signal.emit(f"✗ Transcription error: {str(e)}", "ERROR")
+            self.finished_signal.emit(False)
+    
+    def stop(self):
+        self._is_running = False
+
 # ====================== Main Window ======================
 class ScraperGUI(QMainWindow):
     def __init__(self):
@@ -1272,6 +1324,8 @@ class ScraperGUI(QMainWindow):
                 self.scraper_thread.stop()
                 self.scraper_thread.wait()
 
+    # Update your existing methods in the main GUI class:
+
     def scraping_finished(self, success):
         global scraping_active, current_process
         scraping_active = False
@@ -1314,19 +1368,58 @@ class ScraperGUI(QMainWindow):
         
         if success and self.auto_transcribe_checkbox.isChecked():
             self.append_log("Auto-transcription enabled → Starting transcription of downloaded videos...", "SUCCESS")
-            QTimer.singleShot(2000, self.start_transcription)  # Delay 2s to avoid race condition
+            QTimer.singleShot(2000, self.start_transcription)
 
     def start_transcription(self):
         try:
             script_path = 'updated_video_transcription.py'
-            if os.path.exists(script_path):
-                subprocess.Popen([sys.executable, script_path, TARGET_FOLDER], cwd=os.getcwd())
-                self.append_log("Video transcription started in background...", "SUCCESS")
-            else:
+            
+            if not os.path.exists(script_path):
                 self.append_log(f"✗ Script not found: {script_path}", "ERROR")
                 QMessageBox.warning(self, "File Not Found", f"Transcription script not found:\n{script_path}")
+                return
+            
+            # Check if transcription is already running
+            if hasattr(self, 'transcription_thread') and self.transcription_thread.isRunning():
+                self.append_log("⚠ Transcription already in progress!", "WARNING")
+                return
+            
+            self.append_log("=" * 50, "INFO")
+            self.append_log("Starting video transcription in background...", "SUCCESS")
+            self.append_log(f"Processing folders from: {TARGET_FOLDER}", "INFO")
+            self.append_log("=" * 50, "INFO")
+            
+            # Create and start transcription thread
+            self.transcription_thread = TranscriptionThread(script_path, TARGET_FOLDER)
+            self.transcription_thread.log_signal.connect(self.append_log)
+            self.transcription_thread.finished_signal.connect(self.on_transcription_finished)
+            self.transcription_thread.start()
+            
         except Exception as e:
-            self.append_log(f"✗ Failed to start transcription: {e}", "ERROR")
+            self.append_log(f"✗ Failed to start transcription: {str(e)}", "ERROR")
+            QMessageBox.critical(self, "Error", f"Failed to start transcription:\n{str(e)}")
+
+    def on_transcription_finished(self, success):
+        """Called when transcription thread completes"""
+        self.append_log("=" * 50, "INFO")
+        if success:
+            self.append_log("✓ All video transcriptions completed successfully!", "SUCCESS")
+            
+            # Desktop notification for transcription completion
+            if NOTIFICATIONS_AVAILABLE:
+                try:
+                    notification.notify(
+                        title="5AI Scraper - Transcription",
+                        message="Video transcription completed successfully!",
+                        app_name="5AI Scraper",
+                        timeout=10
+                    )
+                except:
+                    pass
+        else:
+            self.append_log("⚠ Transcription completed with errors. Check logs above.", "WARNING")
+        
+        self.append_log("=" * 50, "INFO")
 
     def setup_telegram_auth(self):
         """Guide user through Telegram authentication setup"""
