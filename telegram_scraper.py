@@ -147,10 +147,8 @@ class ScraperThread(QThread):
                 self.log_signal.emit(f"✗ Critical Error: {e}", "ERROR")
             self.finished_signal.emit(False)
 
-from PyQt5.QtCore import QThread, pyqtSignal, QTimer
-import subprocess
-import sys
-import os
+
+
 
 # Add this class at the top of your file (outside the main GUI class)
 class TranscriptionThread(QThread):
