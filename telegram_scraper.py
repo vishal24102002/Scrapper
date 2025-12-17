@@ -2,6 +2,7 @@ import os, sys, subprocess, time, queue, re, logging, io, json
 from decouple import config
 from datetime import datetime, timedelta
 from pathlib import Path
+from update import GitHubPuller
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QTextEdit, QCheckBox, QCalendarWidget,
@@ -29,7 +30,7 @@ if not getattr(sys, 'frozen', False):
 
 # ====================== PATH & LOGGING ======================
 BASE_DIR = config("BASE_DIR", default=os.getcwd())
-VERSION = "v2.3"
+VERSION = "v0.4"
 
 os.makedirs("data_files", exist_ok=True)
 logging.basicConfig(
@@ -137,7 +138,41 @@ class ScraperThread(QThread):
                 self.log_signal.emit(f"✗ Critical Error: {e}", "ERROR")
             self.finished_signal.emit(False)
 
-# Add this class at the top of your file (outside the main GUI class)
+# ====================== Git Update Thread ======================
+class GitUpdateThread(QThread):
+    log_signal = pyqtSignal(str, str)  # message, level
+    finished_signal = pyqtSignal(bool, str)  # success, message
+    
+    def __init__(self, password, repo_path='.'):
+        super().__init__()
+        self.password = password
+        self.repo_path = repo_path
+    
+    def run(self):
+        try:
+            from update import GitHubPuller
+            
+            self.log_signal.emit("🔄 Initializing GitHub puller...", "INFO")
+            puller = GitHubPuller('sqlite.db')
+            
+            self.log_signal.emit("🔐 Authenticating...", "INFO")
+            result = puller.pull_and_update(self.password, self.repo_path)
+            
+            if result['success']:
+                self.log_signal.emit("✓ " + result['message'], "SUCCESS")
+                if 'output' in result and result['output']:
+                    self.log_signal.emit(f"Git output: {result['output']}", "INFO")
+                self.finished_signal.emit(True, result['message'])
+            else:
+                self.log_signal.emit("✗ " + result['message'], "ERROR")
+                self.finished_signal.emit(False, result['message'])
+                
+        except Exception as e:
+            self.log_signal.emit(f"✗ Update error: {str(e)}", "ERROR")
+            self.finished_signal.emit(False, str(e))
+
+
+#====================== Add this class at the top of your file (outside the main GUI class) =======================================
 class TranscriptionThread(QThread):
     log_signal = pyqtSignal(str, str)  # (message, log_type)
     finished_signal = pyqtSignal(bool)  # True if successful, False if failed
@@ -672,12 +707,17 @@ class ScraperGUI(QMainWindow):
 
         settings_layout.addLayout(log_grid)
 
+        settings_layout.addStretch()
+
+        self.btn_setup_git = QPushButton("🔐 Setup Git Password")
+        self.btn_setup_git.clicked.connect(self.setup_git_password)
+        self.btn_setup_git.setToolTip("Configure password for git updates (first time)")
+        settings_layout.addWidget(self.btn_setup_git)
+
         self.btn_check_updates = QPushButton("🔄 Check for Updates")
         self.btn_check_updates.clicked.connect(self.check_updates)
         self.btn_check_updates.setToolTip("Check for new version")
         settings_layout.addWidget(self.btn_check_updates)
-
-        settings_layout.addStretch()
 
         # Create a horizontal container for both widgets
         bottom_row = QHBoxLayout()
@@ -1407,3 +1447,161 @@ class ScraperGUI(QMainWindow):
         self.append_log("=" * 50, "INFO")
         self.append_log("ℹ When you start scraping, authentication dialogs will appear if needed", "INFO")
         self.append_log("=" * 50, "INFO")
+
+
+    def setup_git_password(self):
+        """Setup password for git updates (first time only)"""
+        try:
+            from update import GitHubPuller
+            
+            puller = GitHubPuller('sqlite.db')
+            
+            # Check if password already exists
+            try:
+                # Try to verify with empty password to check if one exists
+                conn = sqlite3.connect('sqlite.db')
+                cursor = conn.cursor()
+                cursor.execute('SELECT id FROM auth_config WHERE id = 1')
+                exists = cursor.fetchone() is not None
+                conn.close()
+                
+                if exists:
+                    QMessageBox.information(
+                        self, 
+                        "Already Configured",
+                        "Git update password is already configured.\n\nUse 'Check for Updates' to update your repository."
+                    )
+                    return
+            except:
+                pass
+            
+            # Prompt for new password
+            password, ok = QInputDialog.getText(
+                self,
+                "Setup Git Update Password",
+                "Enter a secure password for git updates:\n(This password cannot be changed later)",
+                QLineEdit.EchoMode.Password
+            )
+            
+            if not ok or not password:
+                return
+            
+            if len(password) < 6:
+                QMessageBox.warning(self, "Weak Password", "Password must be at least 6 characters long")
+                return
+            
+            # Confirm password
+            confirm, ok = QInputDialog.getText(
+                self,
+                "Confirm Password",
+                "Re-enter password to confirm:",
+                QLineEdit.EchoMode.Password
+            )
+            
+            if not ok or password != confirm:
+                QMessageBox.warning(self, "Mismatch", "Passwords do not match!")
+                return
+            
+            # Set password
+            puller.set_initial_password(password)
+            self.append_log("✓ Git update password configured successfully!", "SUCCESS")
+            QMessageBox.information(
+                self,
+                "Success",
+                "Git update password has been set!\n\n⚠️ This password CANNOT be changed.\n\nUse 'Check for Updates' button to pull latest changes."
+            )
+            
+        except Exception as e:
+            self.append_log(f"✗ Failed to setup git password: {str(e)}", "ERROR")
+            QMessageBox.critical(self, "Error", f"Failed to setup password:\n{str(e)}")
+
+
+    def check_updates(self):
+        """Check and pull updates from GitHub"""
+        try:
+            import sqlite3
+            from update import GitHubPuller
+            
+            # Check if password is configured
+            try:
+                conn = sqlite3.connect('sqlite.db')
+                cursor = conn.cursor()
+                cursor.execute('SELECT id FROM auth_config WHERE id = 1')
+                exists = cursor.fetchone() is not None
+                conn.close()
+                
+                if not exists:
+                    reply = QMessageBox.question(
+                        self,
+                        "Password Not Set",
+                        "Git update password is not configured.\n\nWould you like to set it up now?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    )
+                    if reply == QMessageBox.StandardButton.Yes:
+                        self.setup_git_password()
+                    return
+            except:
+                pass
+            
+            # Prompt for password
+            password, ok = QInputDialog.getText(
+                self,
+                "Authenticate",
+                "Enter your git update password:",
+                QLineEdit.EchoMode.Password
+            )
+            
+            if not ok or not password:
+                return
+            
+            self.append_log("=" * 50, "INFO")
+            self.append_log("🔄 Checking for updates from GitHub...", "INFO")
+            
+            # Disable update button during operation
+            self.btn_check_updates.setEnabled(False)
+            self.btn_check_updates.setText("⏳ Updating...")
+            
+            # Start update thread
+            self.git_update_thread = GitUpdateThread(password, os.getcwd())
+            self.git_update_thread.log_signal.connect(lambda msg, lvl: self.append_log(msg, lvl))
+            self.git_update_thread.finished_signal.connect(self.on_update_finished)
+            self.git_update_thread.start()
+            
+        except Exception as e:
+            self.append_log(f"✗ Update failed: {str(e)}", "ERROR")
+            QMessageBox.critical(self, "Error", f"Update failed:\n{str(e)}")
+            self.btn_check_updates.setEnabled(True)
+            self.btn_check_updates.setText("🔄 Check for Updates")
+
+
+    def on_update_finished(self, success, message):
+        """Called when git update completes"""
+        self.btn_check_updates.setEnabled(True)
+        self.btn_check_updates.setText("🔄 Check for Updates")
+        
+        self.append_log("=" * 50, "INFO")
+        
+        if success:
+            QMessageBox.information(
+                self,
+                "Update Successful",
+                f"{message}\n\nThe application has been updated!\n\nPlease restart the application for changes to take effect."
+            )
+            
+            # Ask if user wants to restart
+            reply = QMessageBox.question(
+                self,
+                "Restart Application?",
+                "Would you like to restart the application now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                QApplication.quit()
+                os.execl(sys.executable, sys.executable, *sys.argv)
+        else:
+            QMessageBox.warning(
+                self,
+                "Update Failed",
+                f"Failed to update:\n\n{message}\n\nPlease check your internet connection and try again."
+            )
