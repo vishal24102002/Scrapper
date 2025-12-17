@@ -15,7 +15,7 @@ additional_file/
 # Node / Angular
 node_modules/
 dist/
-venv/
+scraper_venv/
 .env
 
 # Logs

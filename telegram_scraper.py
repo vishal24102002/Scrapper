@@ -2,6 +2,7 @@ import os, sys, subprocess, time, queue, re, logging, io, json
 from decouple import config
 from datetime import datetime, timedelta
 from pathlib import Path
+from update import GitHubPuller
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QTextEdit, QCheckBox, QCalendarWidget,
@@ -29,7 +30,7 @@ if not getattr(sys, 'frozen', False):
 
 # ====================== PATH & LOGGING ======================
 BASE_DIR = config("BASE_DIR", default=os.getcwd())
-VERSION = "v2.3"
+VERSION = "v0.4"
 
 os.makedirs("data_files", exist_ok=True)
 logging.basicConfig(
@@ -74,9 +75,13 @@ class ScraperThread(QThread):
 
     def provide_input(self, user_input):
         """Called from main thread to provide user input"""
-        self.user_input = user_input
-        if self.input_event:
-            self.input_event.set()
+        if current_process and current_process.stdin and current_process.poll() is None:
+            input_text = user_input.strip() + '\n'
+            current_process.stdin.write(input_text)
+            current_process.stdin.flush()
+            self.log_signal.emit(f"✓ Input sent: {user_input.strip()}", "SUCCESS")
+        else:
+            self.log_signal.emit("✗ Failed to send input — process not running", "ERROR")
 
     def run(self):
         global current_process
@@ -92,48 +97,34 @@ class ScraperThread(QThread):
             )
             
             for line in iter(current_process.stdout.readline, ''):
-                if not self._is_running:
-                    break
-                if line:
-                    line = line.rstrip()
-                    
-                    # Check if script is asking for input
-                    if any(prompt in line.lower() for prompt in [
-                        "enter phone number", "enter your phone", "phone number:",
-                        "enter code", "enter the code", "code:", "otp",
-                        "enter password", "password:", "2fa"
-                    ]):
-                        self.log_signal.emit(line, "WARNING")
-                        self.input_required_signal.emit(line)
-                        # Wait for main thread to provide input
-                        import threading
-                        self.input_event = threading.Event()
-                        self.input_event.wait(timeout=300)  # 5 minute timeout
-                        
-                        if self.user_input and current_process and current_process.stdin:
-                            current_process.stdin.write(self.user_input + '\n')
-                            current_process.stdin.flush()
-                            self.log_signal.emit(f"✓ Input provided", "SUCCESS")
-                        self.user_input = None
-                        self.input_event = None
-                        continue
-                    
-                    # Parse special markers
-                    if line.startswith("BYTES_DOWNLOADED:"):
-                        try:
-                            bytes_val = int(line.split(":")[1])
-                            self.bytes_signal.emit(bytes_val)
-                        except:
-                            pass
-                    elif "ERROR" in line.upper() or "FAILED" in line.upper():
-                        self.log_signal.emit(line, "ERROR")
-                    elif "WARNING" in line.upper():
-                        self.log_signal.emit(line, "WARNING")
-                    elif "SUCCESS" in line.upper() or "COMPLETED" in line.upper():
-                        self.log_signal.emit(line, "SUCCESS")
-                    else:
-                        self.log_signal.emit(line, "INFO")
-            
+                line = line.rstrip('\n')
+                if not line:
+                    continue
+
+                # Always log normal lines
+                self.log_signal.emit(line, "INFO")
+
+                # === DETECT GUI INPUT REQUESTS ===
+                if line == "GUI_NEEDS_INPUT:PHONE":
+                    self.input_required_signal.emit("PHONE")
+                elif line == "GUI_NEEDS_INPUT:CODE":
+                    self.input_required_signal.emit("CODE")
+                elif line == "GUI_NEEDS_INPUT:PASSWORD":
+                    self.input_required_signal.emit("PASSWORD")
+                elif line == "GUI_AUTH_SUCCESS":
+                    self.log_signal.emit("✓ Signed in successfully to Telegram!", "SUCCESS")
+                elif line.startswith("GUI_AUTH_FAILED:"):
+                    error = line[len("GUI_AUTH_FAILED:"):]
+                    self.log_signal.emit(f"✗ Authentication failed: {error}", "ERROR")
+
+                # Your existing BYTES_DOWNLOADED handling
+                elif line.startswith("BYTES_DOWNLOADED:"):
+                    try:
+                        bytes_val = int(line.split(":")[1])
+                        self.bytes_signal.emit(bytes_val)
+                    except:
+                        pass
+
             current_process.wait()
             success = current_process.returncode == 0
             if self._is_running:
@@ -146,6 +137,87 @@ class ScraperThread(QThread):
             if self._is_running:
                 self.log_signal.emit(f"✗ Critical Error: {e}", "ERROR")
             self.finished_signal.emit(False)
+
+# ====================== Git Update Thread ======================
+class GitUpdateThread(QThread):
+    log_signal = pyqtSignal(str, str)  # message, level
+    finished_signal = pyqtSignal(bool, str)  # success, message
+    
+    def __init__(self, password, repo_path='.'):
+        super().__init__()
+        self.password = password
+        self.repo_path = repo_path
+    
+    def run(self):
+        try:
+            from update import GitHubPuller
+            
+            self.log_signal.emit("🔄 Initializing GitHub puller...", "INFO")
+            puller = GitHubPuller('sqlite.db')
+            
+            self.log_signal.emit("🔐 Authenticating...", "INFO")
+            result = puller.pull_and_update(self.password, self.repo_path)
+            
+            if result['success']:
+                self.log_signal.emit("✓ " + result['message'], "SUCCESS")
+                if 'output' in result and result['output']:
+                    self.log_signal.emit(f"Git output: {result['output']}", "INFO")
+                self.finished_signal.emit(True, result['message'])
+            else:
+                self.log_signal.emit("✗ " + result['message'], "ERROR")
+                self.finished_signal.emit(False, result['message'])
+                
+        except Exception as e:
+            self.log_signal.emit(f"✗ Update error: {str(e)}", "ERROR")
+            self.finished_signal.emit(False, str(e))
+
+
+#====================== Add this class at the top of your file (outside the main GUI class) =======================================
+class TranscriptionThread(QThread):
+    log_signal = pyqtSignal(str, str)  # (message, log_type)
+    finished_signal = pyqtSignal(bool)  # True if successful, False if failed
+    
+    def __init__(self, script_path, target_folder):
+        super().__init__()
+        self.script_path = script_path
+        self.target_folder = target_folder
+        self._is_running = True
+    
+    def run(self):
+        try:
+            process = subprocess.Popen(
+                [sys.executable, self.script_path, self.target_folder],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+            
+            # Read output line by line in real-time
+            while self._is_running:
+                line = process.stdout.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if line:
+                    self.log_signal.emit(line, "INFO")
+            
+            process.wait()
+            
+            if process.returncode == 0:
+                self.log_signal.emit("✓ Transcription completed successfully!", "SUCCESS")
+                self.finished_signal.emit(True)
+            else:
+                self.log_signal.emit(f"✗ Transcription failed with exit code {process.returncode}", "ERROR")
+                self.finished_signal.emit(False)
+                
+        except Exception as e:
+            self.log_signal.emit(f"✗ Transcription error: {str(e)}", "ERROR")
+            self.finished_signal.emit(False)
+    
+    def stop(self):
+        self._is_running = False
 
 # ====================== Main Window ======================
 class ScraperGUI(QMainWindow):
@@ -426,6 +498,7 @@ class ScraperGUI(QMainWindow):
         self.calendar.setVisible(False)  # Hidden by default
         left_layout.addWidget(self.calendar)
         
+        
         date_btn_layout = QHBoxLayout()
         self.btn_add_date = QPushButton("➕ Add Date")
         self.btn_add_date.clicked.connect(self.add_selected_date)
@@ -447,6 +520,26 @@ class ScraperGUI(QMainWindow):
         self.dates_list.setToolTip("Right-click to remove individual dates")
         left_layout.addWidget(self.dates_list)
         
+        left_layout.addSpacerItem(QSpacerItem(20, 15, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+        
+        # === AUTO TRANSCRIPTION CHECKBOX ===
+        self.auto_transcribe_checkbox = QCheckBox("Auto-transcribe videos after scraping")
+        self.auto_transcribe_checkbox.setChecked(True)  # Optional: default on
+        self.auto_transcribe_checkbox.setStyleSheet("""
+            QCheckBox {
+                font-size: 14px;
+                font-weight: bold;
+                color: #00ffaa;
+                spacing: 10px;
+            }
+            QCheckBox::indicator {
+                width: 20px;
+                height: 20px;
+            }
+        """)
+        self.auto_transcribe_checkbox.setToolTip("If checked, videos will be automatically transcribed after scraping completes")
+        left_layout.addWidget(self.auto_transcribe_checkbox)
+
         left_layout.addSpacerItem(QSpacerItem(20, 15, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
 
         # Action Buttons
@@ -472,19 +565,6 @@ class ScraperGUI(QMainWindow):
         self.btn_setup_auth.setStyleSheet("background-color: #9500ff;")
         left_layout.addWidget(self.btn_setup_auth)
 
-        transcribe_layout = QHBoxLayout()
-        self.btn_transcribe = QPushButton("Transcript ALL")
-        self.btn_transcribe.clicked.connect(self.start_transcription)
-        self.btn_transcribe.setToolTip("Launch video transcription tool")
-        transcribe_layout.addWidget(self.btn_transcribe)
-        
-        self.btn_transcribe = QPushButton("Transcript Selected Date")
-        self.btn_transcribe.clicked.connect(self.start_transcription)
-        self.btn_transcribe.setToolTip("Launch video transcription tool")
-        transcribe_layout.addWidget(self.btn_transcribe)
-
-        left_layout.addLayout(transcribe_layout)
-        
         self.btn_fetch_news = QPushButton("Fetch News")
         self.btn_fetch_news.clicked.connect(lambda: self.append_log("Fetch News - coming soon", "INFO"))
         self.btn_fetch_news.setToolTip("Fetch news articles (coming soon)")
@@ -627,12 +707,17 @@ class ScraperGUI(QMainWindow):
 
         settings_layout.addLayout(log_grid)
 
+        settings_layout.addStretch()
+
+        self.btn_setup_git = QPushButton("🔐 Setup Git Password")
+        self.btn_setup_git.clicked.connect(self.setup_git_password)
+        self.btn_setup_git.setToolTip("Configure password for git updates (first time)")
+        settings_layout.addWidget(self.btn_setup_git)
+
         self.btn_check_updates = QPushButton("🔄 Check for Updates")
         self.btn_check_updates.clicked.connect(self.check_updates)
         self.btn_check_updates.setToolTip("Check for new version")
         settings_layout.addWidget(self.btn_check_updates)
-
-        settings_layout.addStretch()
 
         # Create a horizontal container for both widgets
         bottom_row = QHBoxLayout()
@@ -1203,47 +1288,28 @@ class ScraperGUI(QMainWindow):
         self.scraper_thread.finished_signal.connect(self.scraping_finished)
         self.scraper_thread.start()
 
-    def handle_input_request(self, prompt):
-        """Handle input requests from Telethon (phone, OTP, password)"""
-        self.append_log("⚠ User input required!", "WARNING")
-        
-        # Determine what type of input is needed
-        prompt_lower = prompt.lower()
-        if "phone" in prompt_lower:
-            title = "Telegram Authentication"
-            label = "Enter your phone number (with country code, e.g., +919876543210):"
-            echo_mode = QLineEdit.EchoMode.Normal
-        elif "code" in prompt_lower or "otp" in prompt_lower:
-            title = "Telegram OTP"
-            label = "Enter the verification code sent to your Telegram:"
-            echo_mode = QLineEdit.EchoMode.Normal
-        elif "password" in prompt_lower or "2fa" in prompt_lower:
-            title = "Telegram 2FA Password"
-            label = "Enter your 2FA password:"
-            echo_mode = QLineEdit.EchoMode.Password
+    def handle_input_request(self, input_type):
+        prompts = {
+            "PHONE": ("Telegram Login - Phone Number", "Enter your phone number (with country code):\nExample: +919876543210", "+91", QLineEdit.EchoMode.Normal),
+            "CODE": ("Verification Code", "Enter the code you received on Telegram:", "", QLineEdit.EchoMode.Normal),
+            "PASSWORD": ("2FA Password", "Enter your 2FA password (if enabled):", "", QLineEdit.EchoMode.Password),
+        }
+
+        if input_type not in prompts:
+            return
+
+        title, label, default, echo_mode = prompts[input_type]
+
+        text, ok = QInputDialog.getText(
+            self, title, label, echo_mode, default
+        )
+
+        if ok and text.strip():
+            self.scraper_thread.provide_input(text.strip())
+            self.append_log(f"✓ {input_type} submitted", "SUCCESS")
         else:
-            title = "Input Required"
-            label = prompt
-            echo_mode = QLineEdit.EchoMode.Normal
-        
-        # Create input dialog
-        dialog = QInputDialog(self)
-        dialog.setWindowTitle(title)
-        dialog.setLabelText(label)
-        dialog.setTextEchoMode(echo_mode)
-        dialog.resize(500, 150)
-        
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            user_input = dialog.textValue()
-            if user_input:
-                self.scraper_thread.provide_input(user_input)
-                self.append_log(f"✓ Input submitted", "SUCCESS")
-            else:
-                self.append_log("✗ No input provided", "ERROR")
-                self.scraper_thread.provide_input("")  # Send empty to continue
-        else:
-            self.append_log("✗ Input cancelled by user", "ERROR")
-            self.scraper_thread.provide_input("")  # Send empty to continue
+            self.scraper_thread.provide_input("")  # Send empty line if cancelled
+            self.append_log("✗ Input cancelled or empty", "WARNING")
 
     def stop_scraping(self):
         global scraping_active, current_process
@@ -1263,6 +1329,8 @@ class ScraperGUI(QMainWindow):
             if hasattr(self, 'scraper_thread'):
                 self.scraper_thread.stop()
                 self.scraper_thread.wait()
+
+    # Update your existing methods in the main GUI class:
 
     def scraping_finished(self, success):
         global scraping_active, current_process
@@ -1303,18 +1371,60 @@ class ScraperGUI(QMainWindow):
                 )
             except:
                 pass
+        
+        if success and self.auto_transcribe_checkbox.isChecked():
+            self.append_log("Auto-transcription enabled → Starting transcription of downloaded videos...", "SUCCESS")
+            QTimer.singleShot(2000, self.start_transcription)
 
     def start_transcription(self):
         try:
             script_path = 'updated_video_transcription.py'
-            if os.path.exists(script_path):
-                subprocess.Popen([sys.executable, script_path])
-                self.append_log("✓ Transcription tool launched", "SUCCESS")
-            else:
+            
+            if not os.path.exists(script_path):
                 self.append_log(f"✗ Script not found: {script_path}", "ERROR")
                 QMessageBox.warning(self, "File Not Found", f"Transcription script not found:\n{script_path}")
+                return
+            
+            # Check if transcription is already running
+            if hasattr(self, 'transcription_thread') and self.transcription_thread.isRunning():
+                self.append_log("⚠ Transcription already in progress!", "WARNING")
+                return
+            
+            self.append_log("=" * 50, "INFO")
+            self.append_log("Starting video transcription in background...", "SUCCESS")
+            self.append_log(f"Processing folders from: {TARGET_FOLDER}", "INFO")
+            self.append_log("=" * 50, "INFO")
+            
+            # Create and start transcription thread
+            self.transcription_thread = TranscriptionThread(script_path, TARGET_FOLDER)
+            self.transcription_thread.log_signal.connect(self.append_log)
+            self.transcription_thread.finished_signal.connect(self.on_transcription_finished)
+            self.transcription_thread.start()
+            
         except Exception as e:
-            self.append_log(f"✗ Failed to start transcription: {e}", "ERROR")
+            self.append_log(f"✗ Failed to start transcription: {str(e)}", "ERROR")
+            QMessageBox.critical(self, "Error", f"Failed to start transcription:\n{str(e)}")
+
+    def on_transcription_finished(self, success):
+        """Called when transcription thread completes"""
+        self.append_log("=" * 50, "INFO")
+        if success:
+            self.append_log("✓ All video transcriptions completed successfully!", "SUCCESS")
+            
+            # Desktop notification for transcription completion
+            if NOTIFICATIONS_AVAILABLE:
+                try:
+                    notification.notify(
+                        title="5AI Scraper - Transcription",
+                        message="Video transcription completed successfully!",
+                        app_name="5AI Scraper",
+                        timeout=10
+                    )
+                except:
+                    pass
+        else:
+            self.append_log("⚠ Transcription completed with errors. Check logs above.", "WARNING")
+        self.append_log("=" * 50, "INFO")
 
     def setup_telegram_auth(self):
         """Guide user through Telegram authentication setup"""
@@ -1337,3 +1447,161 @@ class ScraperGUI(QMainWindow):
         self.append_log("=" * 50, "INFO")
         self.append_log("ℹ When you start scraping, authentication dialogs will appear if needed", "INFO")
         self.append_log("=" * 50, "INFO")
+
+
+    def setup_git_password(self):
+        """Setup password for git updates (first time only)"""
+        try:
+            from update import GitHubPuller
+            
+            puller = GitHubPuller('sqlite.db')
+            
+            # Check if password already exists
+            try:
+                # Try to verify with empty password to check if one exists
+                conn = sqlite3.connect('sqlite.db')
+                cursor = conn.cursor()
+                cursor.execute('SELECT id FROM auth_config WHERE id = 1')
+                exists = cursor.fetchone() is not None
+                conn.close()
+                
+                if exists:
+                    QMessageBox.information(
+                        self, 
+                        "Already Configured",
+                        "Git update password is already configured.\n\nUse 'Check for Updates' to update your repository."
+                    )
+                    return
+            except:
+                pass
+            
+            # Prompt for new password
+            password, ok = QInputDialog.getText(
+                self,
+                "Setup Git Update Password",
+                "Enter a secure password for git updates:\n(This password cannot be changed later)",
+                QLineEdit.EchoMode.Password
+            )
+            
+            if not ok or not password:
+                return
+            
+            if len(password) < 6:
+                QMessageBox.warning(self, "Weak Password", "Password must be at least 6 characters long")
+                return
+            
+            # Confirm password
+            confirm, ok = QInputDialog.getText(
+                self,
+                "Confirm Password",
+                "Re-enter password to confirm:",
+                QLineEdit.EchoMode.Password
+            )
+            
+            if not ok or password != confirm:
+                QMessageBox.warning(self, "Mismatch", "Passwords do not match!")
+                return
+            
+            # Set password
+            puller.set_initial_password(password)
+            self.append_log("✓ Git update password configured successfully!", "SUCCESS")
+            QMessageBox.information(
+                self,
+                "Success",
+                "Git update password has been set!\n\n⚠️ This password CANNOT be changed.\n\nUse 'Check for Updates' button to pull latest changes."
+            )
+            
+        except Exception as e:
+            self.append_log(f"✗ Failed to setup git password: {str(e)}", "ERROR")
+            QMessageBox.critical(self, "Error", f"Failed to setup password:\n{str(e)}")
+
+
+    def check_updates(self):
+        """Check and pull updates from GitHub"""
+        try:
+            import sqlite3
+            from update import GitHubPuller
+            
+            # Check if password is configured
+            try:
+                conn = sqlite3.connect('sqlite.db')
+                cursor = conn.cursor()
+                cursor.execute('SELECT id FROM auth_config WHERE id = 1')
+                exists = cursor.fetchone() is not None
+                conn.close()
+                
+                if not exists:
+                    reply = QMessageBox.question(
+                        self,
+                        "Password Not Set",
+                        "Git update password is not configured.\n\nWould you like to set it up now?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    )
+                    if reply == QMessageBox.StandardButton.Yes:
+                        self.setup_git_password()
+                    return
+            except:
+                pass
+            
+            # Prompt for password
+            password, ok = QInputDialog.getText(
+                self,
+                "Authenticate",
+                "Enter your git update password:",
+                QLineEdit.EchoMode.Password
+            )
+            
+            if not ok or not password:
+                return
+            
+            self.append_log("=" * 50, "INFO")
+            self.append_log("🔄 Checking for updates from GitHub...", "INFO")
+            
+            # Disable update button during operation
+            self.btn_check_updates.setEnabled(False)
+            self.btn_check_updates.setText("⏳ Updating...")
+            
+            # Start update thread
+            self.git_update_thread = GitUpdateThread(password, os.getcwd())
+            self.git_update_thread.log_signal.connect(lambda msg, lvl: self.append_log(msg, lvl))
+            self.git_update_thread.finished_signal.connect(self.on_update_finished)
+            self.git_update_thread.start()
+            
+        except Exception as e:
+            self.append_log(f"✗ Update failed: {str(e)}", "ERROR")
+            QMessageBox.critical(self, "Error", f"Update failed:\n{str(e)}")
+            self.btn_check_updates.setEnabled(True)
+            self.btn_check_updates.setText("🔄 Check for Updates")
+
+
+    def on_update_finished(self, success, message):
+        """Called when git update completes"""
+        self.btn_check_updates.setEnabled(True)
+        self.btn_check_updates.setText("🔄 Check for Updates")
+        
+        self.append_log("=" * 50, "INFO")
+        
+        if success:
+            QMessageBox.information(
+                self,
+                "Update Successful",
+                f"{message}\n\nThe application has been updated!\n\nPlease restart the application for changes to take effect."
+            )
+            
+            # Ask if user wants to restart
+            reply = QMessageBox.question(
+                self,
+                "Restart Application?",
+                "Would you like to restart the application now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                QApplication.quit()
+                os.execl(sys.executable, sys.executable, *sys.argv)
+        else:
+            QMessageBox.warning(
+                self,
+                "Update Failed",
+                f"Failed to update:\n\n{message}\n\nPlease check your internet connection and try again."
+            )
