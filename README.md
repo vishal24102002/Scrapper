@@ -55,6 +55,6 @@ Vosk_Model= //vosk model path if dont then keep it empty as well
 </pre>
 
 - **Step4** : run the main.py
-  ```bash
-  python main.py
-  ```
+```bash
+python main.py
+```
