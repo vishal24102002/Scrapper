@@ -395,10 +395,8 @@ async def start_scraping(selected_groups, selected_datatypes, scrape_dates, targ
             code_callback=ask_code,
             password=ask_password
         )
-        print("GUI_AUTH_SUCCESS")  # Tell GUI we're logged in
         sys.stdout.flush()
     except Exception as e:
-        print(f"GUI_AUTH_FAILED:{str(e)}")
         sys.stdout.flush()
         return
     for scrape_date in scrape_dates:

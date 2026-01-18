@@ -7,8 +7,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QTextEdit, QCheckBox, QCalendarWidget,
     QLineEdit, QFileDialog, QGroupBox, QSpacerItem, QSizePolicy,
-    QMessageBox, QDialog, QListWidget, QProgressBar, QMenu, QToolButton,
-    QInputDialog
+    QMessageBox, QDialog, QListWidget, QProgressBar, QMenu, QToolButton,QStackedWidget,QFormLayout,QFrame,
+    QInputDialog,QSpinBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QDate, QSettings, QSize
 from PyQt6.QtGui import QFont, QPalette, QColor, QTextCursor, QIcon, QAction, QTextCharFormat
@@ -40,6 +40,7 @@ logging.basicConfig(
 )
 
 # ====================== GLOBALS ======================
+SCRAPE_MODE = "date"   # "date" or "keyword"
 scraping_active = False
 selected_groups = []
 selected_data_types = []
@@ -448,6 +449,37 @@ class ScraperGUI(QMainWindow):
 
         left_layout.addSpacerItem(QSpacerItem(20, 5, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
 
+        
+        # # ====================== DATE SELECTION ======================
+        # left_layout.addWidget(QLabel("4. Select Dates"))
+        
+        # # Quick preset buttons
+        # preset_layout = QGridLayout()
+        # presets = [
+        #     ("Yesterday", 1, "Select yesterday's date"),
+        #     ("Last 30 Days", 30, "Select past month"),
+        #     ("Last 2 years", 730, "Select past 2 years"),
+        #     ("Custom", 0, "Select custom dates from calendar")
+        # ]
+        # for i, (label, days, tooltip) in enumerate(presets):
+        #     btn = QPushButton(label)
+        #     btn.setToolTip(tooltip)
+        #     if days == 0:
+        #         btn.setStyleSheet("background-color: #ff9500;")
+        #         btn.clicked.connect(self.show_custom_calendar)
+        #     else:
+        #         btn.clicked.connect(lambda checked, d=days: self.add_date_preset(d))
+        #     preset_layout.addWidget(btn, i // 2, i % 2)
+        # left_layout.addLayout(preset_layout)
+        
+        self.mode_stack = QStackedWidget()
+        left_layout.addWidget(self.mode_stack)
+        
+        # ─── Panel 1: Date-based ────────────────────────────────────────────────
+        date_panel = QWidget()
+        date_layout = QVBoxLayout(date_panel)
+        date_layout.setContentsMargins(0, 10, 0, 0)
+
         # Main control buttons
         buttons = [
             ("1. Select Groups", self.open_group_selector, "Choose which Telegram groups to scrape"),
@@ -458,8 +490,8 @@ class ScraperGUI(QMainWindow):
             btn = QPushButton(text)
             btn.clicked.connect(func)
             btn.setToolTip(tooltip)
-            left_layout.addWidget(btn)
-            left_layout.addSpacerItem(QSpacerItem(20, 8, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+            date_layout.addWidget(btn)
+            date_layout.addSpacerItem(QSpacerItem(20, 8, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
 
         self.folder_display = QLineEdit(f"{TARGET_FOLDER}")
         self.folder_display.setReadOnly(True)
@@ -468,58 +500,169 @@ class ScraperGUI(QMainWindow):
         
         left_layout.addSpacerItem(QSpacerItem(20, 10, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
 
-        # ====================== DATE SELECTION ======================
-        left_layout.addWidget(QLabel("4. Select Dates"))
         
-        # Quick preset buttons
+        date_layout.addWidget(QLabel("4. Select Dates"))
+        
+        # Quick preset buttons (same as before)
         preset_layout = QGridLayout()
         presets = [
-            ("Yesterday", 1, "Select yesterday's date"),
-            ("Last 30 Days", 30, "Select past month"),
-            ("Last 2 years", 730, "Select past 2 years"),
-            ("Custom", 0, "Select custom dates from calendar")
+            ("Yesterday", 1),
+            ("Last 30 Days", 30),
+            ("Last 2 years", 730),
+            ("Custom", 0),
         ]
-        for i, (label, days, tooltip) in enumerate(presets):
+        for i, (label, days) in enumerate(presets):
             btn = QPushButton(label)
-            btn.setToolTip(tooltip)
             if days == 0:
                 btn.setStyleSheet("background-color: #ff9500;")
                 btn.clicked.connect(self.show_custom_calendar)
             else:
-                btn.clicked.connect(lambda checked, d=days: self.add_date_preset(d))
+                btn.clicked.connect(lambda _, d=days: self.add_date_preset(d))
             preset_layout.addWidget(btn, i // 2, i % 2)
-        left_layout.addLayout(preset_layout)
+        date_layout.addLayout(preset_layout)
         
-        # Calendar widget (hidden by default)
-        self.calendar = QCalendarWidget()
-        self.calendar.setGridVisible(True)
-        self.calendar.setMaximumDate(QDate.currentDate().addDays(-1))
-        self.calendar.clicked.connect(self.highlight_calendar_dates)
-        self.calendar.setVisible(False)  # Hidden by default
-        left_layout.addWidget(self.calendar)
-        
+        # Calendar + buttons
+        self.calendar = QCalendarWidget()  # assuming already created earlier
+        self.calendar.setVisible(False)
+        date_layout.addWidget(self.calendar)
         
         date_btn_layout = QHBoxLayout()
         self.btn_add_date = QPushButton("➕ Add Date")
         self.btn_add_date.clicked.connect(self.add_selected_date)
-        self.btn_add_date.setToolTip("Add selected date to the list")
-        self.btn_add_date.setVisible(False)  # Hidden by default
+        self.btn_add_date.setVisible(False)
         date_btn_layout.addWidget(self.btn_add_date)
         
         self.btn_clear_dates = QPushButton("🗑 Clear All")
         self.btn_clear_dates.clicked.connect(self.clear_all_dates)
-        self.btn_clear_dates.setToolTip("Remove all selected dates")
         date_btn_layout.addWidget(self.btn_clear_dates)
-        left_layout.addLayout(date_btn_layout)
+        date_layout.addLayout(date_btn_layout)
         
-        left_layout.addWidget(QLabel("Selected Dates:"))
+        date_layout.addWidget(QLabel("Selected Dates:"))
         self.dates_list = QListWidget()
-        self.dates_list.setMaximumHeight(100)
-        self.dates_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.dates_list.customContextMenuRequested.connect(self.show_dates_context_menu)
-        self.dates_list.setToolTip("Right-click to remove individual dates")
-        left_layout.addWidget(self.dates_list)
+        self.dates_list.setMaximumHeight(140)
+        # ... context menu setup as before ...
+        date_layout.addWidget(self.dates_list)
         
+        self.mode_stack.addWidget(date_panel)
+        
+        # ─── Panel 2: Keyword-based ─────────────────────────────────────────────
+        keyword_panel = QWidget()
+        keyword_layout = QVBoxLayout(keyword_panel)
+        keyword_layout.setContentsMargins(16, 20, 16, 32)
+        keyword_layout.setSpacing(16)
+
+        # Title
+        title = QLabel("Keyword Search")
+        title.setStyleSheet("font-size: 17px; font-weight: bold; color: #93c5fd;")
+        keyword_layout.addWidget(title)
+
+        # Search field with icon prefix
+        search_container = QFrame()
+        search_container.setStyleSheet("""
+            QFrame {
+                background: #1e293b;
+                border: 1px solid #334155;
+                border-radius: 10px;
+            }
+        """)
+        search_layout = QHBoxLayout(search_container)
+        search_layout.setContentsMargins(12, 0, 12, 0)
+        search_layout.setSpacing(10)
+
+        search_icon = QLabel("🔍")
+        search_icon.setStyleSheet("font-size: 20px; color: #94a3b8; min-width: 24px;")
+        search_layout.addWidget(search_icon)
+
+        self.keyword_edit = QLineEdit()
+        self.keyword_edit.setPlaceholderText("quantum computing OR qubit OR grok OR xai")
+        self.keyword_edit.setStyleSheet("""
+            QLineEdit {
+                background: transparent;
+                color: #e2e8f0;
+                border: none;
+                font-size: 15px;
+                padding: 12px 4px;
+            }
+            QLineEdit:focus {
+                background: #0f172a;
+            }
+        """)
+        search_layout.addWidget(self.keyword_edit)
+
+        keyword_layout.addWidget(search_container)
+
+        # Hint text
+        hint = QLabel("Case-insensitive • supports OR / -exclude / \"exact phrase\"")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #94a3b8; font-size: 13px; line-height: 1.4;")
+        keyword_layout.addWidget(hint)
+
+        keyword_layout.addSpacing(8)
+
+        # Limit row – aligned left + spinbox
+        limit_row = QHBoxLayout()
+        limit_row.setSpacing(12)
+
+        limit_label = QLabel("Max messages per chat:")
+        limit_label.setStyleSheet("font-size: 14px; color: #cbd5e1; min-width: 170px;")
+        limit_row.addWidget(limit_label)
+
+        self.limit_spin = QSpinBox()
+        self.limit_spin.setRange(1, 1000)
+        self.limit_spin.setValue(100)
+        self.limit_spin.setSingleStep(10)
+        self.limit_spin.setFixedWidth(110)
+        self.limit_spin.setStyleSheet("""
+            QSpinBox {
+                background: #1e293b;
+                color: #e2e8f0;
+                border: 1px solid #334155;
+                border-radius: 6px;
+                padding: 6px 8px;
+                font-size: 14px;
+            }
+            
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                background: #60a5fa;
+            }
+        """)
+        limit_row.addWidget(self.limit_spin)
+        limit_row.addStretch()
+
+        keyword_layout.addLayout(limit_row)
+
+        keyword_layout.addSpacing(12)
+
+        # Scope checkbox – more readable
+        self.scope_all = QCheckBox("Search in ALL chats")
+        self.scope_all.setChecked(True)
+        self.scope_all.setStyleSheet("""
+            QCheckBox {
+                font-size: 14px;
+                font-weight: bold;
+                color: #00ffaa;
+                spacing: 10px;
+            }
+            QCheckBox::indicator {
+                width: 20px;
+                height: 20px;
+            }
+        """)
+
+        self.scope_all.stateChanged.connect(self.toggle_group_button_visibility)
+        keyword_layout.addWidget(self.scope_all)
+
+        keyword_layout.addStretch(1)
+
+        self.select_groups_btn = QPushButton("Select Groups")
+        self.select_groups_btn.clicked.connect(self.open_group_selector)
+        self.select_groups_btn.setToolTip("Choose which Telegram groups to scrape")
+        self.select_groups_btn.setVisible(False)
+        keyword_layout.addWidget(self.select_groups_btn)
+        
+        self.mode_stack.addWidget(keyword_panel)
+        # ────────────────────────────────────────────────────────────────────────
+
         left_layout.addSpacerItem(QSpacerItem(20, 15, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
         
         # === AUTO TRANSCRIPTION CHECKBOX ===
@@ -707,6 +850,31 @@ class ScraperGUI(QMainWindow):
 
         settings_layout.addLayout(log_grid)
 
+                # ────────────────  NEW: SCRAPE MODE TOGGLE  ────────────────
+        mode_group = QGroupBox("Scraping Mode")
+        mode_group.setStyleSheet("QGroupBox { font-weight: bold; color: #88ff88; }")
+        mode_layout = QHBoxLayout()
+        
+        self.btn_mode_date = QPushButton("📅 Date-based")
+        self.btn_mode_date.setCheckable(True)
+        self.btn_mode_date.setChecked(True)  # default
+        self.btn_mode_date.clicked.connect(lambda: self.set_scrape_mode("date"))
+        
+        self.btn_mode_keyword = QPushButton("🔍 Keyword-based")
+        self.btn_mode_keyword.setCheckable(True)
+        self.btn_mode_keyword.setChecked(False)
+        self.btn_mode_keyword.clicked.connect(lambda: self.set_scrape_mode("keyword"))
+        
+        mode_layout.addWidget(self.btn_mode_date)
+        mode_layout.addWidget(self.btn_mode_keyword)
+        mode_group.setLayout(mode_layout)
+        
+        settings_layout.addStretch()
+        
+        settings_layout.addWidget(mode_group)
+        
+        # ─────────────────────────────────────────────────────────────
+
         settings_layout.addStretch()
 
         self.btn_setup_git = QPushButton("🔐 Setup Git Password")
@@ -746,6 +914,44 @@ class ScraperGUI(QMainWindow):
         main_layout.addWidget(left_panel, 1)
         main_layout.addLayout(middle_column, 2)
         main_layout.addWidget(settings_panel, 1)
+
+    def toggle_group_button_visibility(self, state):
+        """
+        Toggle the visibility of Select Groups button based on checkbox state
+        state == 2 (Qt.CheckState.Checked) -> Hide button
+        state == 0 (Qt.CheckState.Unchecked) -> Show button
+        """
+        if self.select_groups_btn:
+            # If checkbox is checked, hide the button
+            is_checked = state == 2  # Qt.CheckState.Checked
+            self.select_groups_btn.setVisible(not is_checked)
+            
+            if is_checked:
+                self.append_log("'Select Groups' button hidden (Searching in ALL chats)", "INFO")
+            else:
+                self.append_log("'Select Groups' button visible", "INFO")
+
+
+    def set_scrape_mode(self, mode):
+        global SCRAPE_MODE
+        if mode == SCRAPE_MODE:
+            return
+            
+        SCRAPE_MODE = mode
+        
+        self.btn_mode_date.setChecked(mode == "date")
+        self.btn_mode_keyword.setChecked(mode == "keyword")
+        
+        if mode == "date":
+            self.mode_stack.setCurrentIndex(0)   # date panel
+            self.append_log("Switched to Date-based mode", "SUCCESS")
+            
+        elif mode == "keyword":
+            self.mode_stack.setCurrentIndex(1)   # keyword panel
+            self.append_log("Switched to Keyword-based mode", "SUCCESS")
+            if not self.keyword_edit.text().strip():
+                self.keyword_edit.setFocus()
+                self.append_log("Please enter search keyword", "INFO")
 
     # ====================== UTILITY METHODS ======================
     def show_custom_calendar(self):
@@ -1306,6 +1512,13 @@ class ScraperGUI(QMainWindow):
 
         if ok and text.strip():
             self.scraper_thread.provide_input(text.strip())
+            if input_type=="PHONE" and text:
+                from dotenv import set_key
+
+                print(text, "value of phoen number")
+
+                # This creates or updates 'SECRET_KEY' in the .env file
+                set_key(".env", input_type, text)
             self.append_log(f"✓ {input_type} submitted", "SUCCESS")
         else:
             self.scraper_thread.provide_input("")  # Send empty line if cancelled
